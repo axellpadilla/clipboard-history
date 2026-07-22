@@ -1,15 +1,16 @@
 use std::{
     env, io,
     sync::{
-        Arc, mpsc,
+        Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
         mpsc::{Receiver, Sender},
     },
     thread,
 };
 
 use ::image as image_crate;
-use futures::{Stream, SinkExt};
+use futures::{SinkExt, Stream};
 use iced::{
     Element, Event, Subscription, Task,
     event::Status,
@@ -101,6 +102,17 @@ pub struct RingboardApp {
     window_id: Option<window::Id>,
 }
 
+/// A one-off `window::resize` after the window is already showing turned out
+/// to corrupt text rendering in this iced version (a real render glitch, not
+/// just a timing/positioning one — investigated and confirmed via manual
+/// testing, not just theorized), so the window is sized once, fixed, at
+/// creation (see `main`) instead of adapting to the actual monitor. Kept in
+/// the middle of the min/max range so it's reasonable on both small and
+/// large screens without ever needing a post-launch resize.
+pub const WINDOW_MIN_SIZE: iced::Size = iced::Size::new(400.0, 480.0);
+pub const WINDOW_DEFAULT_SIZE: iced::Size = iced::Size::new(600.0, 650.0);
+pub const WINDOW_MAX_SIZE: iced::Size = iced::Size::new(800.0, 900.0);
+
 /// Bridges the background controller thread's blocking `Receiver` into an
 /// async stream, so the UI is woken only when a message actually arrives
 /// instead of polling on a timer.
@@ -175,13 +187,11 @@ impl RingboardApp {
         if daemon {
             let stop = stop.clone();
             thread::spawn(move || {
-                if let Err(e) = crate::startup::maintain_single_instance(
-                    &stop,
-                    startup_token,
-                    move || {
+                if let Err(e) =
+                    crate::startup::maintain_single_instance(&stop, startup_token, move || {
                         let _ = wake_tx.send(());
-                    },
-                ) {
+                    })
+                {
                     eprintln!("Single-instance background thread failed: {e}");
                 }
             });
@@ -200,10 +210,15 @@ impl RingboardApp {
 
         let focus_search = operation::focus(crate::widgets::search_input_id());
         let controller_stream = Task::stream(controller_messages(response_receiver));
-        let mut tasks = vec![focus_search, controller_stream];
+        // Populates `window_id` as early as possible, ahead of the first
+        // `window::Event` — needed for hide/show/focus.
+        let mut tasks = vec![
+            focus_search,
+            controller_stream,
+            window::latest().map(Message::WindowIdResolved),
+        ];
         if daemon {
             tasks.push(Task::stream(wake_messages(wake_rx)));
-            tasks.push(window::latest().map(Message::WindowIdResolved));
         }
         (app, Task::batch(tasks))
     }
@@ -219,7 +234,9 @@ impl RingboardApp {
             Message::KeyEvent(event) => self.handle_key_event(event),
             Message::WindowEvent(id, event) => self.handle_window_event(id, event),
             Message::WindowIdResolved(id) => {
-                self.window_id = self.window_id.or(id);
+                if let Some(id) = id {
+                    self.window_id.get_or_insert(id);
+                }
                 Task::none()
             }
             Message::WakeRequested => self.wake(),
@@ -279,8 +296,7 @@ impl RingboardApp {
             Message::SettingsSaved(result) => {
                 self.state.settings.saving = false;
                 self.state.settings.status = Some(
-                    result
-                        .map(|()| "Saved. Restart the Ringboard server to apply.".to_string()),
+                    result.map(|()| "Saved. Restart the Ringboard server to apply.".to_string()),
                 );
                 Task::none()
             }
@@ -540,9 +556,8 @@ impl RingboardApp {
 
     fn run_gc(&mut self) -> Task<Message> {
         let Ok(max_wasted_bytes) = self.state.settings.gc_max_wasted_bytes.trim().parse() else {
-            self.state.settings.status = Some(Err(
-                "Max wasted bytes must be a non-negative number".into()
-            ));
+            self.state.settings.status =
+                Some(Err("Max wasted bytes must be a non-negative number".into()));
             return Task::none();
         };
 
@@ -763,8 +778,7 @@ impl RingboardApp {
             ControllerMessage::Pasted => self.close_or_hide(),
             ControllerMessage::GarbageCollected { bytes_freed } => {
                 self.state.settings.running_gc = false;
-                self.state.settings.status =
-                    Some(Ok(format!("Freed {bytes_freed} bytes.")));
+                self.state.settings.status = Some(Ok(format!("Freed {bytes_freed} bytes.")));
                 self.refresh_entries()
             }
         }
@@ -987,7 +1001,10 @@ impl RingboardApp {
 
         operation::snap_to(
             crate::widgets::entry_list_id(),
-            operation::RelativeOffset { x: 0.0, y: fraction },
+            operation::RelativeOffset {
+                x: 0.0,
+                y: fraction,
+            },
         )
     }
 

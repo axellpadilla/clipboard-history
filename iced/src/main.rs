@@ -1,6 +1,6 @@
 use std::{cell::RefCell, env, ffi::OsStr};
 
-use iced::application;
+use iced::{application, window};
 
 mod app;
 mod message;
@@ -40,6 +40,20 @@ fn main() -> iced::Result {
     .subscription(RingboardApp::subscription)
     .theme(|app: &RingboardApp| app.state.theme.theme.clone())
     .exit_on_close_request(!daemon)
+    // Fixed size, not adapted to the monitor: a prior version resized the
+    // window responsively after it opened, but a programmatic
+    // `window::resize` post-launch turned out to corrupt text rendering in
+    // this iced version (confirmed by testing, not a guess), so instead the
+    // window opens once at a reasonable middle-of-the-range size and stays
+    // there — `min_size`/`max_size` still bound how far the user can drag
+    // it manually, which doesn't hit the same bug.
+    .window(window::Settings {
+        size: app::WINDOW_DEFAULT_SIZE,
+        min_size: Some(app::WINDOW_MIN_SIZE),
+        max_size: Some(app::WINDOW_MAX_SIZE),
+        ..window::Settings::default()
+    })
+    .centered()
     .run();
 
     if daemon {

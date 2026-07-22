@@ -219,7 +219,15 @@ fn section_header<'a>(
     let count_text = text(count.to_string())
         .size(12)
         .font(app.state.theme.mono_font())
-        .color(app.state.theme.extended_palette().background.base.text.scale_alpha(0.5));
+        .color(
+            app.state
+                .theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.5),
+        );
 
     let title_row: Element<Message> = if collapsible {
         let arrow = if expanded { "\u{25BC}" } else { "\u{25B6}" };
@@ -256,9 +264,7 @@ fn section_header<'a>(
     .width(Length::Fill);
 
     if collapsible {
-        mouse_area(header)
-            .on_press(Message::PinnedToggled)
-            .into()
+        mouse_area(header).on_press(Message::PinnedToggled).into()
     } else {
         header.into()
     }
@@ -555,7 +561,10 @@ fn labeled_field<'a>(
     on_change: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
     row![
-        text(label).size(13).font(app.state.theme.font()).width(Length::FillPortion(2)),
+        text(label)
+            .size(13)
+            .font(app.state.theme.font())
+            .width(Length::FillPortion(2)),
         text_input("", value)
             .on_input(on_change)
             .size(app.state.theme.font_size())
@@ -646,7 +655,11 @@ fn settings_view(app: &RingboardApp, radius: f32) -> Element<'_, Message> {
         .into()
 }
 
-fn error_banner_text<'a>(app: &'a RingboardApp, message: &'a str, radius: f32) -> Element<'a, Message> {
+fn error_banner_text<'a>(
+    app: &'a RingboardApp,
+    message: &'a str,
+    radius: f32,
+) -> Element<'a, Message> {
     container(text(message).size(12).font(app.state.theme.font()))
         .style(move |theme: &iced::Theme| error_banner_style(theme, radius))
         .padding(app.state.theme.input_padding())
@@ -776,7 +789,7 @@ fn fast_paste_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
             .spacing(8)
             .align_y(Alignment::Center),
         )
-        .padding(Padding::new(6.0).top(0.0)),
+        .padding(Padding::new(6.0).top(0.0).bottom(0.0)),
     ]
     .spacing(6)
     .width(Length::Fill)

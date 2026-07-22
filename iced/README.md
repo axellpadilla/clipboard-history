@@ -49,6 +49,9 @@ keyboard/window events and messages pushed from the background controller thread
 their own wakeup, so the app does no work at all while sitting idle (no background polling
 timer). This keeps idle CPU usage effectively at zero.
 
-Note that, unlike the [egui client](../egui), this client currently exits fully when closed rather
-than resuming from a resident background process, so it doesn't yet have an instant-relaunch
-`toggle` command.
+Like the [egui client](../egui), by default this client resumes from a resident background
+process instead of exiting fully when closed: closing the window hides it, and a subsequent
+`ringboard-iced toggle` re-shows the same still-running process instantly rather than starting a
+new one. Set `RINGBOARD_NO_DAEMON=1` to opt out and have the window really exit on close — useful
+when iterating locally, since otherwise re-running the binary without `toggle` still leaves the
+previous instance's window alive in the background until its lock is taken over.
