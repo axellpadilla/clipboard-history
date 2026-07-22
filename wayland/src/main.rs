@@ -617,7 +617,7 @@ impl PendingOffers {
 
             let mut total = 0;
             loop {
-                match {
+                let res = {
                     let max_remaining = usize::MAX / 2 - usize::try_from(*len).unwrap();
                     splice(
                         &read,
@@ -631,7 +631,8 @@ impl PendingOffers {
                             SpliceFlags::NONBLOCK
                         },
                     )
-                } {
+                };
+                match res {
                     Err(Errno::AGAIN) => {
                         log_bytes_received(total);
                         return Ok(());
