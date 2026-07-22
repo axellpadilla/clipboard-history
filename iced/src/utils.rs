@@ -1,10 +1,10 @@
-use ::image as image_crate;
 use std::{
     fs::{self, File},
     io::BufReader,
     num::NonZeroU32,
 };
 
+use ::image as image_crate;
 use ringboard_sdk::config::server as server_config;
 
 /// Decode an image file asynchronously off the main thread.
