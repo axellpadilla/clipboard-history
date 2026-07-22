@@ -35,23 +35,21 @@ A detailed technical breakdown of the project is available at https://alexsaveau
 
 > Note: Ringboard is Linux-only and requires a relatively recent Kernel (6+).
 
-The easiest way to get going is to
-[install cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) and then run the
-installation script for systemd:
+The easiest way to get going is to run the installation script for systemd, which downloads prebuilt
+binaries from this fork's [latest release](https://github.com/axellpadilla/clipboard-history/releases/latest):
 
 ```sh
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/install-with-cargo-systemd.sh | bash
+curl -s https://raw.githubusercontent.com/axellpadilla/clipboard-history/patched/install-with-cargo-systemd.sh | bash
 ```
 
 This installs the [`egui`](egui) GUI by default. To install [`iced`](iced) instead, set
 `RINGBOARD_CLIENT=iced`:
 
 ```sh
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/install-with-cargo-systemd.sh | RINGBOARD_CLIENT=iced bash
+curl -s https://raw.githubusercontent.com/axellpadilla/clipboard-history/patched/install-with-cargo-systemd.sh | RINGBOARD_CLIENT=iced bash
 ```
 
-Additionally, consider using https://github.com/nabijaczleweli/cargo-update to update your cargo
-apps or re-run the installation script whenever you need to update.
+Re-run the installation script whenever you need to update to the latest release.
 
 ### Manual installation
 
@@ -61,16 +59,23 @@ DO NOT RUN if you already installed via the script above.
 
 You'll need the server, an X11 or Wayland clipboard watcher, and a way to view your clipboard:
 
-1. Install the server from source with
-   `cargo install clipboard-history-server --no-default-features --features systemd` or download a
-   [prebuilt binary](https://github.com/SUPERCILEX/clipboard-history/releases/latest).
+> Note: `clipboard-history-*` crates.io packages track upstream (SUPERCILEX). To build this fork's
+> code from source instead, use
+> `cargo install --git https://github.com/axellpadilla/clipboard-history --branch patched -p <package>`
+> in place of `cargo install <package>` below, or use the prebuilt binaries linked per-step.
+
+1. Install the server: build from source with
+   `cargo install clipboard-history-server --no-default-features --features systemd`, or download a
+   prebuilt `ringboard-server` binary from this fork's
+   [latest release](https://github.com/axellpadilla/clipboard-history/releases/latest).
 2. Determine whether you are using Wayland or X11 with `bash -c 'echo $XDG_SESSION_TYPE'`:
    1. If on Wayland, install from source with
-      `cargo install clipboard-history-wayland --no-default-features` (prebuild binaries are also
-      available as before).
-   2. If on X11, install from source with
-      `cargo install clipboard-history-x11 --no-default-features`.
-3. Install a client of your choice:
+      `cargo install clipboard-history-wayland --no-default-features` (prebuilt `ringboard-wayland`
+      binaries are also available as before).
+   2. If on X11, install from source with `cargo install clipboard-history-x11 --no-default-features`
+      (prebuilt `ringboard-x11` binaries are also available).
+3. Install a client of your choice (prebuilt `ringboard-{egui,iced,tui}`/`ringboard` binaries are
+   also available in releases):
    - egui: `cargo install clipboard-history-egui --no-default-features --features wayland/x11`
    - iced: `cargo install clipboard-history-iced`
    - ratatui: `cargo install clipboard-history-tui`
@@ -95,7 +100,7 @@ You'll need to start the Ringboard server and X11/Wayland clipboard watcher on b
 Run
 
 ```sh
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/uninstall.sh | bash
+curl -s https://raw.githubusercontent.com/axellpadilla/clipboard-history/patched/uninstall.sh | bash
 ```
 
 ## Migrating from existing clipboard managers
