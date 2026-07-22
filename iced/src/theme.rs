@@ -30,11 +30,15 @@ impl ThemeManager {
         native_theme_iced::border_radius(&self.resolved)
     }
 
+    // `&self` kept for API symmetry with the other theme-derived accessors
+    // here, even though these two don't currently vary by theme.
+    #[allow(clippy::unused_self)]
     pub fn font(&self) -> Font {
         Font::default()
     }
 
-    pub fn mono_font(&self) -> Font {
+    #[allow(clippy::unused_self)]
+    pub const fn mono_font(&self) -> Font {
         Font::MONOSPACE
     }
 
@@ -148,8 +152,7 @@ pub fn search_bar_style(theme: &Theme, radius: f32) -> container::Style {
 pub fn primary_button_style(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
     let bg = match status {
-        button::Status::Hovered => palette.primary.strong.color,
-        button::Status::Pressed => palette.primary.strong.color,
+        button::Status::Hovered | button::Status::Pressed => palette.primary.strong.color,
         _ => palette.primary.base.color,
     };
     button::Style {

@@ -7,16 +7,20 @@ use iced::{
         tooltip,
     },
 };
-use ringboard_sdk::core::protocol::RingKind;
-use ringboard_sdk::ui_actor::{DetailedEntry, UiEntry, UiEntryCache};
+use ringboard_sdk::{
+    core::protocol::RingKind,
+    ui_actor::{DetailedEntry, UiEntry, UiEntryCache},
+};
 
-use crate::app::RingboardApp;
-use crate::message::Message;
-use crate::state::ActiveTab;
-use crate::theme::{
-    danger_button_style, divider_style, error_banner_style, icon_button_style, pill_button_style,
-    primary_button_style, row_style, search_bar_style, secondary_button_style,
-    section_header_style, warning_banner_style,
+use crate::{
+    app::RingboardApp,
+    message::Message,
+    state::ActiveTab,
+    theme::{
+        danger_button_style, divider_style, error_banner_style, icon_button_style,
+        pill_button_style, primary_button_style, row_style, search_bar_style,
+        secondary_button_style, section_header_style, warning_banner_style,
+    },
 };
 
 // ------------------------------------------------------------------
@@ -70,7 +74,7 @@ pub fn main_view(app: &RingboardApp) -> Element<'_, Message> {
 // Search bar
 // ------------------------------------------------------------------
 
-pub fn search_input_id() -> iced::widget::Id {
+pub const fn search_input_id() -> iced::widget::Id {
     iced::widget::Id::new("search-input")
 }
 
@@ -100,7 +104,7 @@ fn search_bar(app: &RingboardApp) -> Element<'_, Message> {
             .on_press(Message::SearchKindToggled)
             .style(|theme, status| pill_button_style(theme, status, false))
             .padding(app.state.theme.button_padding()),
-        text(format!("Search kind: {} (Alt+X/M)", kind_label)).size(12),
+        text(format!("Search kind: {kind_label} (Alt+X/M)")).size(12),
         tooltip::Position::Bottom,
     );
 
@@ -150,7 +154,7 @@ fn tab_bar(app: &RingboardApp) -> Element<'_, Message> {
 // Entry list
 // ------------------------------------------------------------------
 
-fn entry_list<'a>(app: &'a RingboardApp, detail_id: Option<u64>) -> Element<'a, Message> {
+fn entry_list(app: &RingboardApp, detail_id: Option<u64>) -> Element<'_, Message> {
     let mut col = column![].spacing(4);
 
     let render_items: Vec<&UiEntry> = if app.show_sections() {
@@ -191,7 +195,7 @@ fn entry_list<'a>(app: &'a RingboardApp, detail_id: Option<u64>) -> Element<'a, 
         .into()
 }
 
-pub fn entry_list_id() -> iced::widget::Id {
+pub const fn entry_list_id() -> iced::widget::Id {
     iced::widget::Id::new("entry-list")
 }
 
@@ -373,6 +377,7 @@ fn content_preview<'a>(
                 // gap. Width fills the row and height follows the image's
                 // own aspect ratio (no fixed box), capped so one huge image
                 // can't dominate the list.
+                #[allow(clippy::option_if_let_else)]
                 if let Some(handle) = app.detail_images.get(id).or_else(|| app.thumbnails.get(id)) {
                     container(image(handle.clone()).width(Length::Fill))
                         .max_height(400.0)
@@ -407,7 +412,7 @@ fn content_preview<'a>(
             }
         }
         UiEntryCache::Binary { mime_type } => column![
-            text(format!("[{}]", mime_type))
+            text(format!("[{mime_type}]"))
                 .size(13)
                 .font(app.state.theme.mono_font())
         ]
@@ -445,6 +450,7 @@ pub fn entry_has_extra_detail(entry: &UiEntry) -> bool {
 /// row's layout.
 const ACTIONS_WIDTH: f32 = 110.0;
 
+#[allow(clippy::fn_params_excessive_bools)]
 fn action_row(
     id: u64,
     is_favorite: bool,
@@ -748,7 +754,7 @@ fn error_banner<'a>(
 // Fast paste bar
 // ------------------------------------------------------------------
 
-fn fast_paste_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
+fn fast_paste_bar(app: &RingboardApp) -> Element<'_, Message> {
     let nav = app.nav_entries();
     let chips: Vec<Element<Message>> = nav
         .iter()
@@ -756,7 +762,7 @@ fn fast_paste_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
         .enumerate()
         .map(|(i, entry)| {
             let id = entry.entry.id();
-            let label = format!("{}", i);
+            let label = format!("{i}");
             tooltip(
                 button(text(label).size(11).font(app.state.theme.mono_font()))
                     .on_press(Message::FastPaste(id))
@@ -768,7 +774,7 @@ fn fast_paste_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
                         }
                     })
                     .padding(Padding::new(4.0).left(8).right(8)),
-                text(format!("Ctrl+{} to paste", i)).size(11),
+                text(format!("Ctrl+{i} to paste")).size(11),
                 tooltip::Position::Top,
             )
             .into()
@@ -800,7 +806,7 @@ fn fast_paste_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
 // Status bar
 // ------------------------------------------------------------------
 
-fn status_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
+fn status_bar(app: &RingboardApp) -> Element<'_, Message> {
     let counts = if app.show_sections() {
         let (pinned, unpinned) = app.partitioned_entries();
         format!("{} favorites / {} recent", pinned.len(), unpinned.len())
@@ -814,7 +820,8 @@ fn status_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
         ""
     };
 
-    let shortcuts = "Enter paste  \u{b7}  Esc clear/exit  \u{b7}  Ctrl+D detail  \u{b7}  Ctrl+R refresh  \u{b7}  Ctrl+0-9 paste  \u{b7}  Alt+X search kind";
+    let shortcuts = "Enter paste  \u{b7}  Esc clear/exit  \u{b7}  Ctrl+D detail  \u{b7}  Ctrl+R \
+                     refresh  \u{b7}  Ctrl+0-9 paste  \u{b7}  Alt+X search kind";
 
     column![
         hairline(),

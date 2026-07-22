@@ -28,9 +28,11 @@ use ringboard_sdk::{
     },
 };
 
-use crate::message::{ImageKind, Message};
-use crate::state::{ActiveTab, State};
-use crate::utils::{decode_image_async, load_server_config_async, save_server_config_async};
+use crate::{
+    message::{ImageKind, Message},
+    state::{ActiveTab, State},
+    utils::{decode_image_async, load_server_config_async, save_server_config_async},
+};
 
 /// One request → decode → cache pipeline for images. The app holds two
 /// instances (thumbnails and full-res detail images) that differ only in
@@ -173,7 +175,7 @@ impl RingboardApp {
     pub fn boot(startup_token: Option<crate::startup::Token>) -> (Self, Task<Message>) {
         let (command_sender, command_receiver) = mpsc::channel();
         let (response_sender, response_receiver) = mpsc::sync_channel(8);
-        let requests = command_sender.clone();
+        let requests = command_sender;
 
         thread::spawn(move || {
             controller(&command_receiver, |m| {
@@ -198,7 +200,7 @@ impl RingboardApp {
         }
 
         let state = State::new();
-        let app = RingboardApp {
+        let app = Self {
             requests,
             state,
             thumbnails: ImagePipeline::default(),
@@ -223,6 +225,8 @@ impl RingboardApp {
         (app, Task::batch(tasks))
     }
 
+    // `&self` is required to match `iced`'s `title` function-pointer signature.
+    #[allow(clippy::unused_self)]
     pub fn title(&self) -> String {
         format!("Ringboard v{}", env!("CARGO_PKG_VERSION"))
     }
@@ -232,7 +236,7 @@ impl RingboardApp {
         match message {
             Message::Controller(msg) => self.handle_incoming_controller_message(msg),
             Message::KeyEvent(event) => self.handle_key_event(event),
-            Message::WindowEvent(id, event) => self.handle_window_event(id, event),
+            Message::WindowEvent(id, event) => self.handle_window_event(id, &event),
             Message::WindowIdResolved(id) => {
                 if let Some(id) = id {
                     self.window_id.get_or_insert(id);
@@ -250,7 +254,7 @@ impl RingboardApp {
                 self.state.ui.pinned_expanded = !self.state.ui.pinned_expanded;
                 Task::none()
             }
-            Message::EntryClicked(id) => self.paste(id),
+            Message::EntryClicked(id) | Message::FastPaste(id) => self.paste(id),
             Message::FavoriteToggled(id) => self.toggle_favorite(id),
             Message::DeleteEntry(id) => self.delete(id),
             Message::DetailRequested(id) => self.open_detail(id),
@@ -264,7 +268,6 @@ impl RingboardApp {
             }
 
             Message::Refresh => self.refresh(),
-            Message::FastPaste(id) => self.paste(id),
             Message::DismissError => {
                 self.state.ui.last_error = None;
                 Task::none()
@@ -314,6 +317,8 @@ impl RingboardApp {
     }
 
     /// The TEA subscriptions: Model -> Subscriptions.
+    // `&self` is required to match `iced`'s `subscription` function-pointer signature.
+    #[allow(clippy::unused_self)]
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             keyboard::listen().map(Message::KeyEvent),
@@ -399,7 +404,7 @@ impl RingboardApp {
         }
     }
 
-    pub fn current_highlight_id(&self) -> Option<u64> {
+    pub const fn current_highlight_id(&self) -> Option<u64> {
         if self.state.ui.query.is_empty() {
             self.state.ui.highlighted_id
         } else {
@@ -458,7 +463,7 @@ impl RingboardApp {
         Task::none()
     }
 
-    fn handle_window_event(&mut self, id: window::Id, event: window::Event) -> Task<Message> {
+    fn handle_window_event(&mut self, id: window::Id, event: &window::Event) -> Task<Message> {
         self.window_id.get_or_insert(id);
         match event {
             window::Event::Focused => operation::focus(crate::widgets::search_input_id()),
@@ -503,7 +508,7 @@ impl RingboardApp {
         window::minimize(id, true)
     }
 
-    fn exit(&mut self) -> Task<Message> {
+    fn exit(&self) -> Task<Message> {
         self.stop.store(true, Ordering::Relaxed);
         crate::startup::cleanup();
         std::process::exit(0);
@@ -522,7 +527,7 @@ impl RingboardApp {
         ])
     }
 
-    fn toggle_detail(&mut self) -> Task<Message> {
+    fn toggle_detail(&self) -> Task<Message> {
         if let Some(id) = self.current_highlight_id() {
             if self.state.ui.details_requested == Some(id) {
                 return Task::done(Message::DetailClosed);
@@ -583,8 +588,10 @@ impl RingboardApp {
             .iter()
             .position(|t| *t == self.state.ui.active_tab)
             .unwrap_or(0);
-        let len = tabs.len() as i8;
-        let next = (((current as i8 + delta) % len + len) % len) as usize;
+        let len = isize::try_from(tabs.len()).unwrap_or(0);
+        let current = isize::try_from(current).unwrap_or(0);
+        let next = (current + isize::from(delta)).rem_euclid(len);
+        let next = usize::try_from(next).unwrap_or(0);
         self.select_tab(tabs[next])
     }
 
@@ -594,10 +601,10 @@ impl RingboardApp {
             SearchKind::Regex => SearchKind::Mime,
             SearchKind::Mime => SearchKind::Plain,
         };
-        if !self.state.ui.query.is_empty() {
-            self.send_search()
-        } else {
+        if self.state.ui.query.is_empty() {
             Task::none()
+        } else {
+            self.send_search()
         }
     }
 
@@ -613,10 +620,10 @@ impl RingboardApp {
     fn refresh_entries(&mut self) -> Task<Message> {
         self.state.ui.last_error.take();
         let _ = self.requests.send(Command::LoadFirstPage);
-        if !self.state.ui.query.is_empty() {
-            self.send_search()
-        } else {
+        if self.state.ui.query.is_empty() {
             Task::none()
+        } else {
+            self.send_search()
         }
     }
 
@@ -915,7 +922,8 @@ impl RingboardApp {
                         return self.toggle_search_kind();
                     }
                     if let Some(digit) = s.chars().next().and_then(|c| c.to_digit(10))
-                        && (1..=ActiveTab::ALL.len() as u32).contains(&digit)
+                        && (1..=u32::try_from(ActiveTab::ALL.len()).unwrap_or(u32::MAX))
+                            .contains(&digit)
                     {
                         return Task::done(Message::TabSelected(
                             ActiveTab::ALL[digit as usize - 1],
@@ -1007,13 +1015,10 @@ impl RingboardApp {
             (before / total).clamp(0.0, 1.0)
         };
 
-        operation::snap_to(
-            crate::widgets::entry_list_id(),
-            operation::RelativeOffset {
-                x: 0.0,
-                y: fraction,
-            },
-        )
+        operation::snap_to(crate::widgets::entry_list_id(), operation::RelativeOffset {
+            x: 0.0,
+            y: fraction,
+        })
     }
 
     fn request_images(&mut self, entries: &[UiEntry]) {
@@ -1041,32 +1046,34 @@ impl RingboardApp {
     }
 
     fn next_id(nav: &[&UiEntry], current_id: Option<u64>) -> Option<u64> {
-        if let Some(id) = current_id {
-            let idx = nav.iter().position(|e| e.entry.id() == id);
-            if idx == Some(nav.len().saturating_sub(1)) || idx.is_none() {
-                nav.first().map(|e| e.entry.id())
-            } else {
-                idx.and_then(|i| i.checked_add(1))
-                    .and_then(|i| nav.get(i))
-                    .map(|e| e.entry.id())
-            }
-        } else {
-            nav.first().map(|e| e.entry.id())
-        }
+        current_id.map_or_else(
+            || nav.first().map(|e| e.entry.id()),
+            |id| {
+                let idx = nav.iter().position(|e| e.entry.id() == id);
+                if idx == Some(nav.len().saturating_sub(1)) || idx.is_none() {
+                    nav.first().map(|e| e.entry.id())
+                } else {
+                    idx.and_then(|i| i.checked_add(1))
+                        .and_then(|i| nav.get(i))
+                        .map(|e| e.entry.id())
+                }
+            },
+        )
     }
 
     fn prev_id(nav: &[&UiEntry], current_id: Option<u64>) -> Option<u64> {
-        if let Some(id) = current_id {
-            let idx = nav.iter().position(|e| e.entry.id() == id);
-            if idx == Some(0) || idx.is_none() {
-                nav.last().map(|e| e.entry.id())
-            } else {
-                idx.and_then(|i| i.checked_sub(1))
-                    .and_then(|i| nav.get(i))
-                    .map(|e| e.entry.id())
-            }
-        } else {
-            nav.last().map(|e| e.entry.id())
-        }
+        current_id.map_or_else(
+            || nav.last().map(|e| e.entry.id()),
+            |id| {
+                let idx = nav.iter().position(|e| e.entry.id() == id);
+                if idx == Some(0) || idx.is_none() {
+                    nav.last().map(|e| e.entry.id())
+                } else {
+                    idx.and_then(|i| i.checked_sub(1))
+                        .and_then(|i| nav.get(i))
+                        .map(|e| e.entry.id())
+                }
+            },
+        )
     }
 }

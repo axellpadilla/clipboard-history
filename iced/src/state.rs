@@ -73,21 +73,21 @@ pub enum ActiveTab {
 }
 
 impl ActiveTab {
-    pub const ALL: [ActiveTab; 5] = [
-        ActiveTab::All,
-        ActiveTab::Text,
-        ActiveTab::Images,
-        ActiveTab::Favorites,
-        ActiveTab::Settings,
+    pub const ALL: [Self; 5] = [
+        Self::All,
+        Self::Text,
+        Self::Images,
+        Self::Favorites,
+        Self::Settings,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
-            ActiveTab::All => "All",
-            ActiveTab::Text => "Text",
-            ActiveTab::Images => "Images",
-            ActiveTab::Favorites => "Favorites",
-            ActiveTab::Settings => "Settings",
+            Self::All => "All",
+            Self::Text => "Text",
+            Self::Images => "Images",
+            Self::Favorites => "Favorites",
+            Self::Settings => "Settings",
         }
     }
 }
