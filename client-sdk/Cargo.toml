@@ -33,5 +33,5 @@ supercilex-tests = { version = "0.4.22", default-features = false, features = ["
 error-stack = ["dep:error-stack", "ringboard-core/error-stack"]
 deduplication = ["dep:rustc-hash", "dep:smallvec"]
 search = ["dep:memchr", "dep:regex"]
-ui = ["search", "dep:image", "dep:rustc-hash"]
+ui = ["search", "deduplication", "dep:image", "dep:rustc-hash"]
 watcher-utils = ["dep:rustc-hash"]

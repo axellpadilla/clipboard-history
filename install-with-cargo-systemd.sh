@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -e
 
+# Which GUI client to install as the desktop launcher/`toggle` target.
+# Override with e.g. `RINGBOARD_CLIENT=iced curl ... | bash`.
+RINGBOARD_CLIENT="${RINGBOARD_CLIENT:-egui}"
+if [ "$RINGBOARD_CLIENT" != "egui" ] && [ "$RINGBOARD_CLIENT" != "iced" ]; then
+  echo "Unknown RINGBOARD_CLIENT: $RINGBOARD_CLIENT (expected 'egui' or 'iced')" >&2
+  exit 1
+fi
+RINGBOARD_OTHER_CLIENT="egui"
+if [ "$RINGBOARD_CLIENT" = "egui" ]; then
+  RINGBOARD_OTHER_CLIENT="iced"
+fi
+
 curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/ringboard.slice --create-dirs -O --output-dir ~/.config/systemd/user/
 
 cargo install clipboard-history-server --no-default-features --features systemd
@@ -9,11 +21,22 @@ sed -i "s|ExecStart=ringboard-server|ExecStart=$(which ringboard-server)|g" ~/.c
 
 cargo install clipboard-history
 
-cargo install clipboard-history-egui --no-default-features --features $XDG_SESSION_TYPE,avif || cargo install clipboard-history-egui --no-default-features --features $XDG_SESSION_TYPE
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/egui/ringboard-egui.desktop --create-dirs -O --output-dir ~/.local/share/applications/
+if [ "$RINGBOARD_CLIENT" = "egui" ]; then
+  cargo install clipboard-history-egui --no-default-features --features $XDG_SESSION_TYPE,avif || cargo install clipboard-history-egui --no-default-features --features $XDG_SESSION_TYPE
+else
+  cargo install clipboard-history-iced
+fi
+curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/$RINGBOARD_CLIENT/ringboard-$RINGBOARD_CLIENT.desktop --create-dirs -O --output-dir ~/.local/share/applications/
 curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/logo.jpeg -o ringboard.jpeg --create-dirs -O --output-dir ~/.local/share/icons/hicolor/1024x1024/
-sed -i "s|Exec=ringboard-egui|Exec=$(echo $(which ringboard-egui) toggle)|g" ~/.local/share/applications/ringboard-egui.desktop
-sed -i "s|Icon=ringboard|Icon=$HOME/.local/share/icons/hicolor/1024x1024/ringboard.jpeg|g" ~/.local/share/applications/ringboard-egui.desktop
+sed -i "s|Exec=ringboard-$RINGBOARD_CLIENT|Exec=$(echo $(which ringboard-$RINGBOARD_CLIENT) toggle)|g" ~/.local/share/applications/ringboard-$RINGBOARD_CLIENT.desktop
+sed -i "s|Icon=ringboard|Icon=$HOME/.local/share/icons/hicolor/1024x1024/ringboard.jpeg|g" ~/.local/share/applications/ringboard-$RINGBOARD_CLIENT.desktop
+
+# Replace a previously installed different GUI client so there's only ever
+# one Ringboard launcher entry/binary active, instead of leaving a second,
+# stale icon around that still (mis)launches the old client.
+killall ringboard-$RINGBOARD_OTHER_CLIENT 2> /dev/null || true
+rm -f ~/.local/share/applications/ringboard-$RINGBOARD_OTHER_CLIENT.desktop
+cargo uninstall clipboard-history-$RINGBOARD_OTHER_CLIENT 2> /dev/null || true
 
 # Stop existing watchers in case user is switching between X11 and Wayland
 systemctl --user disable ringboard-x11 --now 2> /dev/null || true
@@ -30,7 +53,7 @@ cargo install clipboard-history-$XDG_SESSION_TYPE --no-default-features
 curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/$XDG_SESSION_TYPE/ringboard-$XDG_SESSION_TYPE.service -O --output-dir ~/.config/systemd/user/
 sed -i "s|ExecStart=ringboard-$XDG_SESSION_TYPE|ExecStart=$(which ringboard-$XDG_SESSION_TYPE)|g" ~/.config/systemd/user/ringboard-$XDG_SESSION_TYPE.service
 
-killall ringboard-egui ringboard-tui 2> /dev/null || true
+killall ringboard-egui ringboard-iced ringboard-tui 2> /dev/null || true
 
 systemctl --user stop ringboard-server
 systemctl --user daemon-reload
@@ -40,8 +63,8 @@ systemctl --user enable ringboard-$XDG_SESSION_TYPE --now
 echo
 echo "--- DONE ---"
 echo
-echo "Consider reading the egui docs:"
-echo "https://github.com/SUPERCILEX/clipboard-history/blob/master/egui/README.md"
+echo "Consider reading the $RINGBOARD_CLIENT docs:"
+echo "https://github.com/SUPERCILEX/clipboard-history/blob/master/$RINGBOARD_CLIENT/README.md"
 
 if [ "$XDG_SESSION_TYPE" = "x11" ]; then
   echo

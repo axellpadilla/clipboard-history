@@ -43,6 +43,13 @@ installation script for systemd:
 curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/install-with-cargo-systemd.sh | bash
 ```
 
+This installs the [`egui`](egui) GUI by default. To install [`iced`](iced) instead, set
+`RINGBOARD_CLIENT=iced`:
+
+```sh
+curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/install-with-cargo-systemd.sh | RINGBOARD_CLIENT=iced bash
+```
+
 Additionally, consider using https://github.com/nabijaczleweli/cargo-update to update your cargo
 apps or re-run the installation script whenever you need to update.
 
@@ -65,11 +72,13 @@ You'll need the server, an X11 or Wayland clipboard watcher, and a way to view y
       `cargo install clipboard-history-x11 --no-default-features`.
 3. Install a client of your choice:
    - egui: `cargo install clipboard-history-egui --no-default-features --features wayland/x11`
+   - iced: `cargo install clipboard-history-iced`
    - ratatui: `cargo install clipboard-history-tui`
    - CLI: `cargo install clipboard-history`
 4. Add a
    [custom shortcut](https://help.gnome.org/users/gnome-help/stable/keyboard-shortcuts-set.html.en)
-   to start your GUI. See the [`egui` docs](egui#suggested-workflow) for example.
+   to start your GUI. See the [`egui`](egui#suggested-workflow) or [`iced`](iced#suggested-workflow)
+   docs for example.
 
 #### For systemd
 
@@ -108,6 +117,7 @@ Each submodule contains its own README with details on the submodule.
 - [`client-sdk/`](client-sdk): The client SDK offers APIs to read and write Ringboard data.
 - [`core/`](core): The core code shared across many Ringboard crates.
 - [`egui/`](egui): The egui Ringboard client displays clipboard entries in a standard GUI.
+- [`iced/`](iced): The iced Ringboard client displays clipboard entries in a standard GUI.
 - [`server/`](server): The Ringboard server writes data to the Ringboard database.
 - [`tui/`](tui): The ratatui Ringboard client displays clipboard entries in your terminal.
 - [`wayland/`](wayland): The Wayland clipboard watcher sends new clipboard entries to the Ringboard
