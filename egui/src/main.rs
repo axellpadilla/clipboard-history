@@ -362,10 +362,9 @@ fn handle_message(message: Message, State { entries, ui }: &mut State, ctx: &egu
             *search_results = entries;
         }
         Message::FavoriteChange(id) => *active_highlighted_id!(ui) = Some(id),
-        Message::Deleted(_) => {}
+        Message::Deleted(_) | Message::GarbageCollected { .. } => {}
         Message::LoadedImage { .. } => unreachable!(),
         Message::Pasted => ctx.send_viewport_cmd(ViewportCommand::Close),
-        Message::GarbageCollected { .. } => {}
     }
 }
 

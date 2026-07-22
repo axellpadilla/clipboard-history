@@ -986,6 +986,8 @@ pub mod clipboard_history_client_sdk::ui_actor
 pub enum clipboard_history_client_sdk::ui_actor::Command
 pub clipboard_history_client_sdk::ui_actor::Command::Delete(u64)
 pub clipboard_history_client_sdk::ui_actor::Command::Favorite(u64)
+pub clipboard_history_client_sdk::ui_actor::Command::GarbageCollect
+pub clipboard_history_client_sdk::ui_actor::Command::GarbageCollect::max_wasted_bytes: u64
 pub clipboard_history_client_sdk::ui_actor::Command::GetDetails
 pub clipboard_history_client_sdk::ui_actor::Command::GetDetails::id: u64
 pub clipboard_history_client_sdk::ui_actor::Command::GetDetails::with_text: bool
@@ -1107,6 +1109,8 @@ pub clipboard_history_client_sdk::ui_actor::Message::EntryDetails::result: core:
 pub clipboard_history_client_sdk::ui_actor::Message::Error(clipboard_history_client_sdk::ui_actor::CommandError)
 pub clipboard_history_client_sdk::ui_actor::Message::FatalDbOpen(clipboard_history_core::Error)
 pub clipboard_history_client_sdk::ui_actor::Message::FavoriteChange(u64)
+pub clipboard_history_client_sdk::ui_actor::Message::GarbageCollected
+pub clipboard_history_client_sdk::ui_actor::Message::GarbageCollected::bytes_freed: u64
 pub clipboard_history_client_sdk::ui_actor::Message::LoadedFirstPage
 pub clipboard_history_client_sdk::ui_actor::Message::LoadedFirstPage::default_focused_id: core::option::Option<u64>
 pub clipboard_history_client_sdk::ui_actor::Message::LoadedFirstPage::entries: alloc::boxed::Box<[clipboard_history_client_sdk::ui_actor::UiEntry]>

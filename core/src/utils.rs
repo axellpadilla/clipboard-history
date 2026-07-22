@@ -450,10 +450,11 @@ pub fn read_at_to_end<Fd: AsFd>(
         if buf.capacity() == 0 {
             break Ok(());
         }
-        match {
+        let res = {
             let offset = offset + u64::try_from(buf.written()).unwrap();
             pread(&file, unsafe { buf.as_mut() }, offset)
-        } {
+        };
+        match res {
             Ok(([], _)) => break Ok(()),
             Ok((init, _)) => {
                 let n = init.len();
