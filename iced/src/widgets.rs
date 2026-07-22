@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use iced::{
     Alignment, Element, Length, Padding,
     widget::{
@@ -23,10 +25,10 @@ use crate::theme::{
 
 pub fn main_view(app: &RingboardApp) -> Element<'_, Message> {
     let is_settings = app.state.ui.active_tab == ActiveTab::Settings;
-    let show_sections = app.state.ui.query.is_empty() && app.state.ui.active_tab == ActiveTab::All;
+    let show_sections = app.show_sections();
     let detail_id = app.state.ui.details_requested;
     let radius = app.state.theme.border_radius();
-    let has_entries = !app.filtered_entries().is_empty();
+    let has_entries = app.has_visible_entries();
 
     let mut col = if is_settings {
         column![tab_bar(app)].spacing(8)
@@ -149,43 +151,35 @@ fn tab_bar(app: &RingboardApp) -> Element<'_, Message> {
 // ------------------------------------------------------------------
 
 fn entry_list<'a>(app: &'a RingboardApp, detail_id: Option<u64>) -> Element<'a, Message> {
-    let filtered = app.filtered_entries();
-    let show_sections = app.state.ui.query.is_empty() && app.state.ui.active_tab == ActiveTab::All;
-    let pinned: Vec<&UiEntry> = filtered
-        .iter()
-        .filter(|e| e.entry.ring() == RingKind::Favorites)
-        .copied()
-        .collect();
-    let unpinned: Vec<&UiEntry> = filtered
-        .iter()
-        .filter(|e| e.entry.ring() == RingKind::Main)
-        .copied()
-        .collect();
-    let has_favorites = !pinned.is_empty();
-
     let mut col = column![].spacing(4);
 
-    if show_sections && has_favorites {
-        col = col.push(section_header(
-            app,
-            "Favorites",
-            pinned.len(),
-            true,
-            app.state.ui.pinned_expanded,
-        ));
+    let render_items: Vec<&UiEntry> = if app.show_sections() {
+        let (pinned, unpinned) = app.partitioned_entries();
 
-        if app.state.ui.pinned_expanded {
-            for entry in &pinned {
-                col = col.push(entry_card(app, entry, detail_id));
+        if !pinned.is_empty() {
+            col = col.push(section_header(
+                app,
+                "Favorites",
+                pinned.len(),
+                true,
+                app.state.ui.pinned_expanded,
+            ));
+
+            if app.state.ui.pinned_expanded {
+                for entry in &pinned {
+                    col = col.push(entry_card(app, entry, detail_id));
+                }
+            }
+
+            if !unpinned.is_empty() {
+                col = col.push(section_header(app, "Recent", unpinned.len(), false, true));
             }
         }
 
-        if !unpinned.is_empty() {
-            col = col.push(section_header(app, "Recent", unpinned.len(), false, true));
-        }
-    }
-
-    let render_items: Vec<&UiEntry> = if show_sections { unpinned } else { filtered };
+        unpinned
+    } else {
+        app.filtered_entries()
+    };
 
     for entry in render_items {
         col = col.push(entry_card(app, entry, detail_id));
@@ -351,9 +345,9 @@ fn content_preview<'a>(
                 .width(Length::Fill)
                 .into()
             } else {
-                let display = match one_liner.char_indices().nth(200) {
-                    Some((byte_idx, _)) => &one_liner[..byte_idx],
-                    None => one_liner,
+                let display: Cow<'_, str> = match one_liner.char_indices().nth(200) {
+                    Some((byte_idx, _)) => Cow::Owned(format!("{}…", &one_liner[..byte_idx])),
+                    None => Cow::Borrowed(one_liner.as_ref()),
                 };
                 column![
                     text(display)
@@ -373,11 +367,7 @@ fn content_preview<'a>(
                 // gap. Width fills the row and height follows the image's
                 // own aspect ratio (no fixed box), capped so one huge image
                 // can't dominate the list.
-                if let Some(handle) = app
-                    .image_detail_cache
-                    .get(&id)
-                    .or_else(|| app.image_cache.get(&id))
-                {
+                if let Some(handle) = app.detail_images.get(id).or_else(|| app.thumbnails.get(id)) {
                     container(image(handle.clone()).width(Length::Fill))
                         .max_height(400.0)
                         .width(Length::Fill)
@@ -389,7 +379,7 @@ fn content_preview<'a>(
                         .font(app.state.theme.font())
                         .into()
                 }
-            } else if let Some(handle) = app.image_cache.get(&id) {
+            } else if let Some(handle) = app.thumbnails.get(id) {
                 row![
                     image(handle.clone())
                         .width(Length::Fixed(80.0))
@@ -432,7 +422,13 @@ pub fn entry_has_extra_detail(entry: &UiEntry) -> bool {
     match &entry.cache {
         UiEntryCache::Image => true,
         UiEntryCache::Text { one_liner } | UiEntryCache::HighlightedText { one_liner, .. } => {
-            one_liner.len() > 200
+            // The SDK caps one-liners at 250 bytes, collapses whitespace, and
+            // marks any elision with '…' — so the ellipsis (not a byte count)
+            // is the reliable "there's more" signal. The char count matches
+            // content_preview's own 200-char display cut.
+            one_liner.ends_with('…')
+                || one_liner.starts_with('…')
+                || one_liner.char_indices().nth(200).is_some()
         }
         UiEntryCache::Binary { .. } | UiEntryCache::Error(_) => false,
     }
@@ -792,21 +788,11 @@ fn fast_paste_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
 // ------------------------------------------------------------------
 
 fn status_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
-    let filtered = app.filtered_entries();
-    let pinned: Vec<&UiEntry> = filtered
-        .iter()
-        .filter(|e| e.entry.ring() == RingKind::Favorites)
-        .copied()
-        .collect();
-    let unpinned: Vec<&UiEntry> = filtered
-        .iter()
-        .filter(|e| e.entry.ring() == RingKind::Main)
-        .copied()
-        .collect();
-    let counts = if app.state.ui.active_tab == ActiveTab::All && app.state.ui.query.is_empty() {
+    let counts = if app.show_sections() {
+        let (pinned, unpinned) = app.partitioned_entries();
         format!("{} favorites / {} recent", pinned.len(), unpinned.len())
     } else {
-        format!("{} items", filtered.len())
+        format!("{} items", app.filtered_entries().len())
     };
 
     let loading = if app.state.ui.pending_search_token.is_some() {

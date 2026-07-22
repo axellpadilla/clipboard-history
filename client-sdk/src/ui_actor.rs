@@ -21,6 +21,7 @@ use thiserror::Error;
 
 use crate::{
     ClientError, DatabaseReader, Entry, EntryReader, Kind,
+    duplicate_detection::DuplicateDetector,
     api::{
         GarbageCollectRequest, MoveToFrontRequest, RemoveRequest, connect_to_paste_server,
         connect_to_server, send_paste_buffer,
@@ -342,13 +343,43 @@ fn handle_command<E>(
             RemoveResponse { error: Some(e) } => Err(e.into()),
         },
         Command::GarbageCollect { max_wasted_bytes } => {
-            let GarbageCollectResponse { bytes_freed } = {
+            let mut bytes_freed = 0;
+            // Zero means "as clean as possible": match the CLI's `gc 0`
+            // semantics by also removing duplicate entries, not just running
+            // the server-side compaction.
+            if max_wasted_bytes == 0 {
+                shitty_refresh(database);
+                let mut duplicates = DuplicateDetector::default();
+                for entry in database.favorites().rev().chain(database.main().rev()) {
+                    if let Some(len) = duplicates.add_entry(&entry, database, reader)? {
+                        if let RemoveResponse { error: Some(e) } = {
+                            RemoveRequest::response(
+                                maybe_init_server(socket_file, connect_to_server, server)?,
+                                entry.id(),
+                            )
+                        }
+                        .inspect_err(|_| *server = None)?
+                        {
+                            return Err(e.into());
+                        }
+                        if matches!(entry.kind(), Kind::File) {
+                            bytes_freed += len;
+                        }
+                    }
+                }
+            }
+            let GarbageCollectResponse { bytes_freed: compacted } = {
                 GarbageCollectRequest::response(
                     maybe_init_server(socket_file, connect_to_server, server)?,
                     max_wasted_bytes,
                 )
             }
             .inspect_err(|_| *server = None)?;
+            let bytes_freed = bytes_freed + compacted;
+            // GC compacts and ftruncates the bucket files; our mmaps still
+            // cover the old (longer) lengths, so any full-bucket scan (search)
+            // would fault past the new EOF. Reopen to remap at current sizes.
+            *reader_ = Some(EntryReader::open(&mut data_dir())?);
             Ok(Some(Message::GarbageCollected { bytes_freed }))
         }
         Command::Search { query, kind, token } => {

@@ -6,6 +6,16 @@ use ringboard_sdk::ui_actor::Message as ControllerMessage;
 
 use crate::state::ActiveTab;
 
+/// Which of the two image pipelines a decode belongs to (see
+/// `RingboardApp::thumbnails`/`detail_images`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageKind {
+    /// Downscaled row-preview resolution.
+    Thumbnail,
+    /// Full resolution, for the open detail panel.
+    Detail,
+}
+
 /// The only way to change application state (TEA Msg).
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -22,10 +32,8 @@ pub enum Message {
     WindowIdResolved(Option<window::Id>),
     /// Another instance of the app asked us to wake up and show ourselves.
     WakeRequested,
-    /// Async image decode completed (row-preview thumbnail resolution).
-    ImageDecoded(u64, Result<image_crate::DynamicImage, String>),
-    /// Async image decode completed at full resolution, for the detail panel.
-    DetailImageDecoded(u64, Result<image_crate::DynamicImage, String>),
+    /// Async image decode completed.
+    ImageDecoded(u64, ImageKind, Result<image_crate::DynamicImage, String>),
     /// Search query changed.
     SearchChanged(String),
     /// Cycle the search kind.

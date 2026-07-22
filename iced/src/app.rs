@@ -27,25 +27,69 @@ use ringboard_sdk::{
     },
 };
 
-use crate::message::Message;
+use crate::message::{ImageKind, Message};
 use crate::state::{ActiveTab, State};
 use crate::utils::{decode_image_async, load_server_config_async, save_server_config_async};
 
-pub type ImageCache = std::collections::HashMap<u64, image::Handle>;
-pub type LoadedImagePending = std::collections::HashSet<u64>;
+/// One request → decode → cache pipeline for images. The app holds two
+/// instances (thumbnails and full-res detail images) that differ only in
+/// how the decoded image is post-processed; keeping the mechanics in one
+/// type means fixes to requesting/eviction can't miss a twin copy.
+#[derive(Default)]
+pub struct ImagePipeline {
+    cache: std::collections::HashMap<u64, image::Handle>,
+    pending: std::collections::HashSet<u64>,
+}
+
+impl ImagePipeline {
+    pub fn get(&self, id: u64) -> Option<&image::Handle> {
+        self.cache.get(&id)
+    }
+
+    /// Asks the controller for the entry's image unless it's already cached
+    /// or in flight.
+    fn request(&mut self, id: u64, requests: &Sender<Command>) {
+        if !self.pending.contains(&id) && !self.cache.contains_key(&id) {
+            self.pending.insert(id);
+            let _ = requests.send(Command::LoadImage(id));
+        }
+    }
+
+    /// Claims an arrived response: true if this pipeline was waiting on it.
+    fn claim(&mut self, id: u64) -> bool {
+        self.pending.remove(&id)
+    }
+
+    fn insert(&mut self, id: u64, handle: image::Handle) {
+        self.cache.insert(id, handle);
+    }
+
+    fn remove(&mut self, id: u64) {
+        self.cache.remove(&id);
+        self.pending.remove(&id);
+    }
+
+    fn retain(&mut self, live: &std::collections::HashSet<u64>) {
+        self.cache.retain(|id, _| live.contains(id));
+        self.pending.retain(|id| live.contains(id));
+    }
+
+    fn clear(&mut self) {
+        self.cache.clear();
+        self.pending.clear();
+    }
+}
 
 /// The application model plus communication channels (TEA Model).
 pub struct RingboardApp {
     pub requests: Sender<Command>,
     pub state: State,
     /// Downscaled row-preview thumbnails, kept for every visible image entry.
-    pub image_cache: ImageCache,
-    pub loaded_image_pending: LoadedImagePending,
+    pub thumbnails: ImagePipeline,
     /// Full-resolution images, fetched lazily only for the entry currently
     /// shown in the detail panel (evicted when it closes) so we're not
     /// holding a full-res decode in memory for every image in the list.
-    pub image_detail_cache: ImageCache,
-    pub loaded_detail_image_pending: LoadedImagePending,
+    pub detail_images: ImagePipeline,
     /// Whether closing the window should hide it (resuming instantly on the
     /// next launch) instead of exiting the process, mirroring the egui
     /// client's background behavior.
@@ -147,10 +191,8 @@ impl RingboardApp {
         let app = RingboardApp {
             requests,
             state,
-            image_cache: ImageCache::default(),
-            loaded_image_pending: LoadedImagePending::default(),
-            image_detail_cache: ImageCache::default(),
-            loaded_detail_image_pending: LoadedImagePending::default(),
+            thumbnails: ImagePipeline::default(),
+            detail_images: ImagePipeline::default(),
             daemon,
             stop,
             window_id: None,
@@ -181,8 +223,7 @@ impl RingboardApp {
                 Task::none()
             }
             Message::WakeRequested => self.wake(),
-            Message::ImageDecoded(id, result) => self.handle_image_decoded(id, result),
-            Message::DetailImageDecoded(id, result) => self.handle_detail_image_decoded(id, result),
+            Message::ImageDecoded(id, kind, result) => self.handle_image_decoded(id, kind, result),
             Message::SearchChanged(query) => self.handle_search_changed(query),
             Message::SearchKindToggled => self.toggle_search_kind(),
             Message::TabSelected(tab) => self.select_tab(tab),
@@ -198,8 +239,7 @@ impl RingboardApp {
             Message::DetailRequested(id) => self.open_detail(id),
             Message::DetailClosed => {
                 if let Some(id) = self.state.ui.details_requested {
-                    self.image_detail_cache.remove(&id);
-                    self.loaded_detail_image_pending.remove(&id);
+                    self.detail_images.remove(id);
                 }
                 self.state.ui.details_requested = None;
                 self.state.ui.detailed_entry = None;
@@ -279,43 +319,67 @@ impl RingboardApp {
         }
     }
 
+    /// Whether the entry currently passes the active tab's filter.
+    fn tab_matches(&self, e: &UiEntry) -> bool {
+        match self.state.ui.active_tab {
+            ActiveTab::All => true,
+            ActiveTab::Text => matches!(
+                e.cache,
+                UiEntryCache::Text { .. } | UiEntryCache::HighlightedText { .. }
+            ),
+            ActiveTab::Images => matches!(e.cache, UiEntryCache::Image),
+            ActiveTab::Favorites => e.entry.ring() == RingKind::Favorites,
+            ActiveTab::Settings => false,
+        }
+    }
+
     /// Return entries filtered by the active tab.
     pub fn filtered_entries(&self) -> Vec<&UiEntry> {
-        if self.state.ui.active_tab == ActiveTab::Settings {
-            return Vec::new();
-        }
         self.active_entries()
             .iter()
-            .filter(|e| match self.state.ui.active_tab {
-                ActiveTab::All => true,
-                ActiveTab::Text => matches!(
-                    e.cache,
-                    UiEntryCache::Text { .. } | UiEntryCache::HighlightedText { .. }
-                ),
-                ActiveTab::Images => matches!(e.cache, UiEntryCache::Image),
-                ActiveTab::Favorites => e.entry.ring() == RingKind::Favorites,
-                ActiveTab::Settings => unreachable!(),
-            })
+            .filter(|e| self.tab_matches(e))
             .collect()
+    }
+
+    /// Like `!filtered_entries().is_empty()`, without building the list.
+    pub fn has_visible_entries(&self) -> bool {
+        self.active_entries().iter().any(|e| self.tab_matches(e))
+    }
+
+    /// Whether the list is split into Favorites/Recent sections. Only the
+    /// unfiltered All tab has sections; searches and the other tabs render
+    /// one flat list. Every consumer of the section split (rendering,
+    /// keyboard navigation, scroll positioning, status counts) must go
+    /// through this and [`Self::partitioned_entries`] so they can't diverge.
+    pub fn show_sections(&self) -> bool {
+        self.state.ui.query.is_empty() && self.state.ui.active_tab == ActiveTab::All
+    }
+
+    /// Splits the filtered list into (pinned favorites, unpinned recents).
+    pub fn partitioned_entries(&self) -> (Vec<&UiEntry>, Vec<&UiEntry>) {
+        self.filtered_entries()
+            .into_iter()
+            .partition(|e| e.entry.ring() == RingKind::Favorites)
+    }
+
+    /// Looks an entry up by id across the loaded and search lists.
+    fn find_entry(&self, id: u64) -> Option<&UiEntry> {
+        self.state
+            .entries
+            .loaded_entries
+            .iter()
+            .chain(self.state.entries.search_results.iter())
+            .find(|e| e.entry.id() == id)
     }
 
     /// Navigation order: pinned first (if shown), then recent/filtered.
     pub fn nav_entries(&self) -> Vec<&UiEntry> {
-        let filtered = self.filtered_entries();
-        if self.state.ui.query.is_empty() && self.state.ui.active_tab == ActiveTab::All {
-            let pinned: Vec<_> = filtered
-                .iter()
-                .filter(|e| e.entry.ring() == RingKind::Favorites)
-                .copied()
-                .collect();
-            let unpinned: Vec<_> = filtered
-                .iter()
-                .filter(|e| e.entry.ring() == RingKind::Main)
-                .copied()
-                .collect();
-            pinned.into_iter().chain(unpinned).collect()
+        if self.show_sections() {
+            let (mut pinned, mut unpinned) = self.partitioned_entries();
+            pinned.append(&mut unpinned);
+            pinned
         } else {
-            filtered
+            self.filtered_entries()
         }
     }
 
@@ -339,13 +403,7 @@ impl RingboardApp {
 
     fn toggle_favorite(&mut self, id: u64) -> Task<Message> {
         let cmd = {
-            let entry = self
-                .state
-                .entries
-                .loaded_entries
-                .iter()
-                .chain(self.state.entries.search_results.iter())
-                .find(|e| e.entry.id() == id);
+            let entry = self.find_entry(id);
             match entry.map(|e| e.entry.ring()) {
                 Some(RingKind::Favorites) => Command::Unfavorite(id),
                 _ => Command::Favorite(id),
@@ -369,13 +427,7 @@ impl RingboardApp {
         if self.state.ui.details_requested != Some(id) {
             self.state.ui.details_requested = Some(id);
             self.state.ui.detailed_entry = None;
-            let entry = self
-                .state
-                .entries
-                .loaded_entries
-                .iter()
-                .chain(self.state.entries.search_results.iter())
-                .find(|e| e.entry.id() == id);
+            let entry = self.find_entry(id);
             let has_text = entry.is_some_and(|e| e.cache.is_text());
             let is_image = entry.is_some_and(|e| matches!(e.cache, UiEntryCache::Image));
             let _ = self.requests.send(Command::GetDetails {
@@ -383,7 +435,7 @@ impl RingboardApp {
                 with_text: has_text,
             });
             if is_image {
-                self.request_detail_image(id);
+                self.detail_images.request(id, &self.requests);
             }
             return self.scroll_to_entry(id);
         }
@@ -419,10 +471,8 @@ impl RingboardApp {
 
     fn hide_window(&mut self, id: window::Id) -> Task<Message> {
         self.state.reset();
-        self.image_cache.clear();
-        self.loaded_image_pending.clear();
-        self.image_detail_cache.clear();
-        self.loaded_detail_image_pending.clear();
+        self.thumbnails.clear();
+        self.detail_images.clear();
         // Minimizing is respected far more consistently across window
         // managers than `Mode::Hidden` (e.g. GNOME/mutter's client-side
         // decoration frame doesn't reliably follow `set_visible(false)`).
@@ -532,10 +582,8 @@ impl RingboardApp {
         self.state.ui.last_error.take();
         self.state.ui.highlighted_id = None;
         self.state.ui.search_highlighted_id = None;
-        self.image_cache.clear();
-        self.loaded_image_pending.clear();
-        self.image_detail_cache.clear();
-        self.loaded_detail_image_pending.clear();
+        self.thumbnails.clear();
+        self.detail_images.clear();
         self.refresh_entries()
     }
 
@@ -576,52 +624,32 @@ impl RingboardApp {
     fn handle_image_decoded(
         &mut self,
         id: u64,
+        kind: ImageKind,
         result: Result<image_crate::DynamicImage, String>,
     ) -> Task<Message> {
         match result {
             Ok(img) => {
-                let max_w = 320;
-                let (w, h) = (img.width(), img.height());
-                let (nw, nh) = if w > max_w {
-                    let ratio = max_w as f32 / w as f32;
-                    (max_w, (h as f32 * ratio) as u32)
-                } else {
-                    (w, h)
+                let img = match kind {
+                    // `thumbnail` preserves aspect ratio (with a >= 1px
+                    // floor) and never upscales, so no manual ratio math.
+                    ImageKind::Thumbnail => img.thumbnail(320, u32::MAX),
+                    // Kept at full resolution: only ever decoded for the
+                    // entry currently open in the detail panel.
+                    ImageKind::Detail => img,
                 };
-                let thumb = img.thumbnail(nw, nh);
-                let rgba = thumb.to_rgba8();
-                let (tw, th) = rgba.dimensions();
-                self.image_cache
-                    .insert(id, image::Handle::from_rgba(tw, th, rgba.into_raw()));
-            }
-            Err(e) => {
-                self.state.ui.last_error = Some(CommandError::Core(CoreError::Io {
-                    error: io::Error::other(e),
-                    context: "image decode".into(),
-                }));
-            }
-        }
-        Task::none()
-    }
-
-    /// Like [`Self::handle_image_decoded`], but keeps the image at full
-    /// resolution instead of downscaling to a thumbnail, since this one is
-    /// only ever decoded for the entry currently open in the detail panel.
-    fn handle_detail_image_decoded(
-        &mut self,
-        id: u64,
-        result: Result<image_crate::DynamicImage, String>,
-    ) -> Task<Message> {
-        match result {
-            Ok(img) => {
                 let rgba = img.to_rgba8();
                 let (w, h) = rgba.dimensions();
-                self.image_detail_cache
-                    .insert(id, image::Handle::from_rgba(w, h, rgba.into_raw()));
-                if self.state.ui.details_requested == Some(id) {
-                    // Aspect ratio may differ from the thumbnail fallback;
-                    // keep the row in view after it resizes.
-                    return self.scroll_to_entry(id);
+                let handle = image::Handle::from_rgba(w, h, rgba.into_raw());
+                match kind {
+                    ImageKind::Thumbnail => self.thumbnails.insert(id, handle),
+                    ImageKind::Detail => {
+                        self.detail_images.insert(id, handle);
+                        if self.state.ui.details_requested == Some(id) {
+                            // Aspect ratio may differ from the thumbnail
+                            // fallback; keep the row in view after it resizes.
+                            return self.scroll_to_entry(id);
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -643,20 +671,18 @@ impl RingboardApp {
             return Task::none();
         };
         if let ControllerMessage::LoadedImage { id, image } = msg {
-            // Detail requests and thumbnail requests are tracked in separate
-            // pending sets (see `request_image`/`request_detail_image`), so
-            // route this response to whichever one is actually waiting on it.
-            if self.loaded_detail_image_pending.remove(&id) {
-                return Task::perform(decode_image_async(id, image), |(id, result)| {
-                    Message::DetailImageDecoded(id, result)
-                });
-            }
-            if self.loaded_image_pending.remove(&id) {
-                return Task::perform(decode_image_async(id, image), |(id, result)| {
-                    Message::ImageDecoded(id, result)
-                });
-            }
-            return Task::none();
+            // Route this response to whichever pipeline is waiting on it
+            // (both request via the same `Command::LoadImage`).
+            let kind = if self.detail_images.claim(id) {
+                ImageKind::Detail
+            } else if self.thumbnails.claim(id) {
+                ImageKind::Thumbnail
+            } else {
+                return Task::none();
+            };
+            return Task::perform(decode_image_async(id, image), move |(id, result)| {
+                Message::ImageDecoded(id, kind, result)
+            });
         }
         self.handle_controller_message(msg)
     }
@@ -669,6 +695,10 @@ impl RingboardApp {
             }
             ControllerMessage::Error(e) => {
                 self.state.settings.running_gc = false;
+                self.state
+                    .ui
+                    .pending_search_token
+                    .take_if(|token| token.is_done());
                 self.state.ui.last_error = Some(e);
                 Task::none()
             }
@@ -682,6 +712,7 @@ impl RingboardApp {
                 }
                 self.request_images(&new_entries);
                 self.state.entries.loaded_entries = new_entries;
+                self.prune_image_caches();
                 Task::none()
             }
             ControllerMessage::EntryDetails { id, result } => {
@@ -694,9 +725,21 @@ impl RingboardApp {
                 Task::none()
             }
             ControllerMessage::SearchResults(new_entries) => {
+                // No pending token means the search was cancelled (Escape or a
+                // cleared query); applying its late results would resurface the
+                // old query's hits — and top-hit highlight — under whatever the
+                // user types next.
+                if self.state.ui.pending_search_token.is_none() {
+                    return Task::none();
+                }
+                self.state
+                    .ui
+                    .pending_search_token
+                    .take_if(|token| token.is_done());
                 self.state.ui.search_highlighted_id = new_entries.first().map(|e| e.entry.id());
                 self.request_images(&new_entries);
                 self.state.entries.search_results = new_entries;
+                self.prune_image_caches();
                 Task::none()
             }
             ControllerMessage::FavoriteChange(id) => {
@@ -705,10 +748,17 @@ impl RingboardApp {
                 } else {
                     self.state.ui.search_highlighted_id = Some(id);
                 }
-                self.image_cache.remove(&id);
+                self.thumbnails.remove(id);
                 self.refresh_entries()
             }
-            ControllerMessage::Deleted(_) => self.refresh_entries(),
+            ControllerMessage::Deleted(id) => {
+                // Composite ids (ring + index) are reused once a slot is freed;
+                // a cached thumbnail left under this id would be shown for
+                // whatever entry lands in the slot next.
+                self.thumbnails.remove(id);
+                self.detail_images.remove(id);
+                self.refresh_entries()
+            }
             ControllerMessage::LoadedImage { .. } => Task::none(),
             ControllerMessage::Pasted => self.close_or_hide(),
             ControllerMessage::GarbageCollected { bytes_freed } => {
@@ -729,21 +779,13 @@ impl RingboardApp {
             return Task::none();
         };
 
-        let show_sections =
-            self.state.ui.query.is_empty() && self.state.ui.active_tab == ActiveTab::All;
+        let show_sections = self.show_sections();
         let nav = self.nav_entries();
-        let pinned: Vec<&UiEntry> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| e.entry.ring() == RingKind::Favorites)
-            .copied()
-            .collect();
-        let unpinned: Vec<&UiEntry> = self
-            .filtered_entries()
-            .iter()
-            .filter(|e| e.entry.ring() == RingKind::Main)
-            .copied()
-            .collect();
+        let (pinned, unpinned) = if show_sections {
+            self.partitioned_entries()
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         let current_id = self.current_highlight_id();
         let mut new_id = current_id;
@@ -774,9 +816,13 @@ impl RingboardApp {
                 if show_sections && !pinned.is_empty() && on_pinned_entry {
                     set_pinned_expanded = Some(false);
                     new_id = unpinned.first().map(|e| e.entry.id());
-                } else if let Some(id) = current_id
+                } else if self.state.ui.query.is_empty()
+                    && let Some(id) = current_id
                     && self.state.ui.details_requested == Some(id)
                 {
+                    // Only when there's no query: with text in the search box,
+                    // Left/Right arrive here too (forwarded after the input
+                    // moves its cursor) and must not double as detail toggles.
                     return Task::done(Message::DetailClosed);
                 }
             }
@@ -785,7 +831,8 @@ impl RingboardApp {
                     && current_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id));
                 if show_sections && !pinned.is_empty() && on_collapsed_pinned_entry {
                     set_pinned_expanded = Some(true);
-                } else if let Some(id) = current_id
+                } else if self.state.ui.query.is_empty()
+                    && let Some(id) = current_id
                     && self.state.ui.details_requested != Some(id)
                     && self.entry_has_extra_detail(id)
                 {
@@ -878,12 +925,7 @@ impl RingboardApp {
     }
 
     fn entry_has_extra_detail(&self, id: u64) -> bool {
-        self.state
-            .entries
-            .loaded_entries
-            .iter()
-            .chain(self.state.entries.search_results.iter())
-            .find(|e| e.entry.id() == id)
+        self.find_entry(id)
             .is_some_and(crate::widgets::entry_has_extra_detail)
     }
 
@@ -918,25 +960,16 @@ impl RingboardApp {
     /// navigation. See [`Self::row_weight`] for why this is weighted
     /// instead of a plain index fraction.
     fn scroll_to_entry(&self, id: u64) -> Task<Message> {
-        let show_sections =
-            self.state.ui.query.is_empty() && self.state.ui.active_tab == ActiveTab::All;
-        let filtered = self.filtered_entries();
-        let render_order: Vec<&UiEntry> = if show_sections {
-            let pinned = filtered
-                .iter()
-                .copied()
-                .filter(|e| e.entry.ring() == RingKind::Favorites);
-            let unpinned = filtered
-                .iter()
-                .copied()
-                .filter(|e| e.entry.ring() == RingKind::Main);
+        let render_order: Vec<&UiEntry> = if self.show_sections() {
+            let (mut pinned, mut unpinned) = self.partitioned_entries();
             if self.state.ui.pinned_expanded {
-                pinned.chain(unpinned).collect()
+                pinned.append(&mut unpinned);
+                pinned
             } else {
-                unpinned.collect()
+                unpinned
             }
         } else {
-            filtered
+            self.filtered_entries()
         };
 
         let Some(idx) = render_order.iter().position(|e| e.entry.id() == id) else {
@@ -961,29 +994,25 @@ impl RingboardApp {
     fn request_images(&mut self, entries: &[UiEntry]) {
         for entry in entries {
             if matches!(entry.cache, UiEntryCache::Image) {
-                self.request_image(entry.entry.id());
+                self.thumbnails.request(entry.entry.id(), &self.requests);
             }
         }
     }
 
-    fn request_image(&mut self, id: u64) {
-        if !self.loaded_image_pending.contains(&id) && !self.image_cache.contains_key(&id) {
-            self.loaded_image_pending.insert(id);
-            let _ = self.requests.send(Command::LoadImage(id));
-        }
-    }
-
-    /// Requests a fresh, full-resolution decode of an image for the detail
-    /// panel. Kept separate from [`Self::request_image`]'s thumbnail cache so
-    /// we only ever hold one full-res image in memory at a time (the one
-    /// currently on screen), rather than for every visible row.
-    fn request_detail_image(&mut self, id: u64) {
-        if !self.loaded_detail_image_pending.contains(&id)
-            && !self.image_detail_cache.contains_key(&id)
-        {
-            self.loaded_detail_image_pending.insert(id);
-            let _ = self.requests.send(Command::LoadImage(id));
-        }
+    /// Drops cached thumbnails for entries no longer in the loaded or search
+    /// lists. Ids are reused once ring slots are freed, so a stale cache hit
+    /// would display the previous entry's image for new content — and without
+    /// pruning the cache grows with every entry ever seen.
+    fn prune_image_caches(&mut self) {
+        let live: std::collections::HashSet<u64> = self
+            .state
+            .entries
+            .loaded_entries
+            .iter()
+            .chain(self.state.entries.search_results.iter())
+            .map(|e| e.entry.id())
+            .collect();
+        self.thumbnails.retain(&live);
     }
 
     fn next_id(nav: &[&UiEntry], current_id: Option<u64>) -> Option<u64> {
