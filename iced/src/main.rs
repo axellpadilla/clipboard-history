@@ -51,6 +51,14 @@ fn main() -> iced::Result {
         size: app::WINDOW_DEFAULT_SIZE,
         min_size: Some(app::WINDOW_MIN_SIZE),
         max_size: Some(app::WINDOW_MAX_SIZE),
+        // Left unset, this comes out as an empty WM_CLASS/app_id on both
+        // X11 and Wayland (iced_winit passes it through verbatim, with no
+        // fallback to the executable name), which breaks window-manager/
+        // taskbar association with a .desktop entry's StartupWMClass.
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: "ringboard-iced".into(),
+            ..window::settings::PlatformSpecific::default()
+        },
         ..window::Settings::default()
     })
     .centered()

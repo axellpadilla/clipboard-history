@@ -17,4 +17,5 @@ cargo uninstall \
   clipboard-history-wayland \
   clipboard-history-tui \
   clipboard-history-egui \
+  clipboard-history-iced \
   clipboard-history

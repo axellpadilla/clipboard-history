@@ -6,6 +6,17 @@ This binary is a Ringboard client that provides a GUI built with
 [iced](https://github.com/iced-rs/iced), using [native-theme-iced](https://docs.rs/native-theme-iced)
 to match your system theme.
 
+## Suggested workflow
+
+To reduce startup latency, closing the application sends it to the background rather than killing
+it. Thus, it is suggested to bind a shortcut that executes the following command for fast clipboard
+launches:
+
+```shell
+# Run this command to generate the command that goes in the shortcut
+bash -c 'echo $(which ringboard-iced) toggle'
+```
+
 ## Usage instructions
 
 - Type to search; the search box is focused automatically whenever the window is focused, so you
