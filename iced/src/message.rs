@@ -22,8 +22,10 @@ pub enum Message {
     WindowIdResolved(Option<window::Id>),
     /// Another instance of the app asked us to wake up and show ourselves.
     WakeRequested,
-    /// Async image decode completed.
+    /// Async image decode completed (row-preview thumbnail resolution).
     ImageDecoded(u64, Result<image_crate::DynamicImage, String>),
+    /// Async image decode completed at full resolution, for the detail panel.
+    DetailImageDecoded(u64, Result<image_crate::DynamicImage, String>),
     /// Search query changed.
     SearchChanged(String),
     /// Cycle the search kind.

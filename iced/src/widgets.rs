@@ -12,9 +12,9 @@ use crate::app::RingboardApp;
 use crate::message::Message;
 use crate::state::ActiveTab;
 use crate::theme::{
-    accent_bar_style, badge_style, card_style, danger_button_style, detail_panel_style,
-    divider_style, error_banner_style, icon_button_style, pill_button_style, primary_button_style,
-    search_bar_style, secondary_button_style, section_header_style, warning_banner_style,
+    danger_button_style, divider_style, error_banner_style, icon_button_style, pill_button_style,
+    primary_button_style, row_style, search_bar_style, secondary_button_style,
+    section_header_style, warning_banner_style,
 };
 
 // ------------------------------------------------------------------
@@ -52,10 +52,10 @@ pub fn main_view(app: &RingboardApp) -> Element<'_, Message> {
     col = col.push(content);
 
     if !is_settings && show_sections && has_entries {
-        col = col.push(fast_paste_bar(app, radius));
+        col = col.push(fast_paste_bar(app));
     }
 
-    col = col.push(status_bar(app, radius));
+    col = col.push(status_bar(app));
 
     container(col)
         .width(Length::Fill)
@@ -201,6 +201,15 @@ pub fn entry_list_id() -> iced::widget::Id {
     iced::widget::Id::new("entry-list")
 }
 
+/// A 1px hairline used in place of a filled box to separate flat panels
+/// (bottom bars, settings sections) from the content around them.
+fn hairline<'a>() -> Element<'a, Message> {
+    container(Space::new().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(|theme: &iced::Theme| divider_style(theme))
+        .into()
+}
+
 // ------------------------------------------------------------------
 // Section header
 // ------------------------------------------------------------------
@@ -213,7 +222,10 @@ fn section_header<'a>(
     expanded: bool,
 ) -> Element<'a, Message> {
     let radius = app.state.theme.border_radius();
-    let _palette = app.state.theme.extended_palette();
+    let count_text = text(count.to_string())
+        .size(12)
+        .font(app.state.theme.mono_font())
+        .color(app.state.theme.extended_palette().background.base.text.scale_alpha(0.5));
 
     let title_row: Element<Message> = if collapsible {
         let arrow = if expanded { "\u{25BC}" } else { "\u{25B6}" };
@@ -221,7 +233,7 @@ fn section_header<'a>(
             text(arrow).size(12),
             text("\u{2605}").size(13),
             text(title).size(13).font(app.state.theme.font()),
-            badge(app, count.to_string(), radius, true),
+            count_text,
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -229,7 +241,7 @@ fn section_header<'a>(
     } else {
         row![
             text(title).size(13).font(app.state.theme.font()),
-            badge(app, count.to_string(), radius, false),
+            count_text,
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -258,21 +270,8 @@ fn section_header<'a>(
     }
 }
 
-fn badge<'a>(
-    app: &'a RingboardApp,
-    label: String,
-    radius: f32,
-    primary: bool,
-) -> Element<'a, Message> {
-    container(text(label).size(11).font(app.state.theme.font()))
-        .style(move |theme: &iced::Theme| badge_style(theme, radius, primary))
-        .padding(Padding::new(2.0).left(8).right(8))
-        .width(Length::Shrink)
-        .into()
-}
-
 // ------------------------------------------------------------------
-// Entry card
+// Entry row
 // ------------------------------------------------------------------
 
 fn entry_card<'a>(
@@ -288,56 +287,109 @@ fn entry_card<'a>(
     let radius = app.state.theme.border_radius();
     let reveal_actions = is_highlighted || is_hovered || is_detail_open;
 
-    let preview = content_preview(app, entry, id);
+    let preview = content_preview(app, entry, id, is_detail_open);
     let has_detail = entry_has_extra_detail(entry);
     let actions = action_row(id, is_favorite, is_detail_open, has_detail, reveal_actions);
+    let content_align = if is_detail_open {
+        Alignment::Start
+    } else {
+        Alignment::Center
+    };
 
-    let mut card_col = column![
-        row![preview, Space::new().width(Length::Fill), actions]
+    let row_col = column![
+        row![container(preview).width(Length::Fill), actions]
             .spacing(8)
-            .align_y(Alignment::Center),
+            .align_y(content_align),
     ]
     .spacing(6);
 
-    if is_detail_open {
-        card_col = card_col.push(detail_panel(app, entry, id, radius));
-    }
-
-    let card = container(card_col)
-        .style(move |theme: &iced::Theme| card_style(theme, is_highlighted, radius))
+    let row = container(row_col)
+        .style(move |theme: &iced::Theme| row_style(theme, is_highlighted, is_hovered, radius))
         .padding(app.state.theme.input_padding())
         .width(Length::Fill);
 
-    let accent = container(Space::new().width(Length::Fixed(4.0)).height(Length::Fill))
-        .style(move |theme: &iced::Theme| accent_bar_style(theme, is_highlighted, radius));
-
-    mouse_area(row![accent, card].spacing(0).align_y(Alignment::Center))
+    mouse_area(row)
         .on_press(Message::EntryClicked(id))
         .on_enter(Message::EntryHovered(Some(id)))
         .on_exit(Message::EntryHovered(None))
         .into()
 }
 
-fn content_preview<'a>(app: &'a RingboardApp, entry: &'a UiEntry, id: u64) -> Element<'a, Message> {
+/// Renders an entry's content. When `expanded` is false this is the compact
+/// one-line/thumbnail row preview; when true, the same slot grows in place
+/// to show the full content (full text, or a larger image) instead of
+/// opening a separate panel that repeats what the row already showed.
+fn content_preview<'a>(
+    app: &'a RingboardApp,
+    entry: &'a UiEntry,
+    id: u64,
+    expanded: bool,
+) -> Element<'a, Message> {
     match &entry.cache {
         UiEntryCache::Text { one_liner } | UiEntryCache::HighlightedText { one_liner, .. } => {
-            let display = if one_liner.len() > 200 {
-                &one_liner[..200]
-            } else {
-                one_liner
-            };
-            column![
-                text(display)
-                    .font(app.state.theme.mono_font())
-                    .size(app.state.theme.mono_font_size())
+            if expanded {
+                let full = match &app.state.ui.detailed_entry {
+                    Some(DetailedEntry {
+                        full_text: Some(full),
+                        ..
+                    }) if app.state.ui.details_requested == Some(id) => full.as_ref(),
+                    _ => one_liner.as_ref(),
+                };
+                // Shrink to the text's natural height when it's short;
+                // scroll instead of growing without bound when it's long.
+                container(
+                    scrollable(
+                        text(full)
+                            .font(app.state.theme.mono_font())
+                            .size(app.state.theme.mono_font_size())
+                            .width(Length::Fill),
+                    )
                     .width(Length::Fill)
-            ]
-            .spacing(0)
-            .padding(0)
-            .into()
+                    .height(Length::Shrink),
+                )
+                .max_height(320.0)
+                .width(Length::Fill)
+                .into()
+            } else {
+                let display = match one_liner.char_indices().nth(200) {
+                    Some((byte_idx, _)) => &one_liner[..byte_idx],
+                    None => one_liner,
+                };
+                column![
+                    text(display)
+                        .font(app.state.theme.mono_font())
+                        .size(app.state.theme.mono_font_size())
+                        .width(Length::Fill)
+                ]
+                .spacing(0)
+                .padding(0)
+                .into()
+            }
         }
         UiEntryCache::Image => {
-            if let Some(handle) = app.image_cache.get(&id) {
+            if expanded {
+                // Prefer the full-res decode; fall back to the thumbnail
+                // scaled up while it's still in flight rather than an empty
+                // gap. Width fills the row and height follows the image's
+                // own aspect ratio (no fixed box), capped so one huge image
+                // can't dominate the list.
+                if let Some(handle) = app
+                    .image_detail_cache
+                    .get(&id)
+                    .or_else(|| app.image_cache.get(&id))
+                {
+                    container(image(handle.clone()).width(Length::Fill))
+                        .max_height(400.0)
+                        .width(Length::Fill)
+                        .clip(true)
+                        .into()
+                } else {
+                    text("Loading image...")
+                        .size(13)
+                        .font(app.state.theme.font())
+                        .into()
+                }
+            } else if let Some(handle) = app.image_cache.get(&id) {
                 row![
                     image(handle.clone())
                         .width(Length::Fixed(80.0))
@@ -349,7 +401,7 @@ fn content_preview<'a>(app: &'a RingboardApp, entry: &'a UiEntry, id: u64) -> El
                 .into()
             } else {
                 // View must not mutate state, so we cannot send LoadImage here.
-                // The detail panel or periodic poll will request the image.
+                // Opening the detail view or a periodic poll requests it.
                 row![
                     text("Image (loading...)")
                         .size(13)
@@ -386,17 +438,22 @@ pub fn entry_has_extra_detail(entry: &UiEntry) -> bool {
     }
 }
 
-/// The reserved width of the delete + detail icons, so revealing them on
-/// hover doesn't shift the favorite star or the row's layout.
-const SECONDARY_ACTIONS_WIDTH: f32 = 76.0;
+/// The reserved width of the whole action cluster (favorite star + delete +
+/// detail toggle), so revealing it on hover/selection doesn't shift the
+/// row's layout.
+const ACTIONS_WIDTH: f32 = 110.0;
 
 fn action_row(
     id: u64,
     is_favorite: bool,
     is_detail_open: bool,
     has_detail: bool,
-    reveal_secondary: bool,
+    reveal: bool,
 ) -> Element<'static, Message> {
+    if !reveal {
+        return Space::new().width(Length::Fixed(ACTIONS_WIDTH)).into();
+    }
+
     let star = if is_favorite { "\u{2605}" } else { "\u{2606}" };
     let detail_arrow = if is_detail_open {
         "\u{25B2}"
@@ -418,140 +475,79 @@ fn action_row(
         tooltip::Position::Top,
     );
 
-    let secondary: Element<Message> = if reveal_secondary {
-        let mut items: Vec<Element<Message>> = vec![
+    let mut items: Vec<Element<Message>> = vec![
+        tooltip(
+            button(text("\u{2715}").size(14))
+                .on_press(Message::DeleteEntry(id))
+                .style(danger_button_style)
+                .padding(6),
+            text("Delete").size(11),
+            tooltip::Position::Top,
+        )
+        .into(),
+    ];
+
+    if has_detail {
+        items.push(
             tooltip(
-                button(text("\u{2715}").size(14))
-                    .on_press(Message::DeleteEntry(id))
-                    .style(danger_button_style)
+                button(text(detail_arrow).size(12))
+                    .on_press(if is_detail_open {
+                        Message::DetailClosed
+                    } else {
+                        Message::DetailRequested(id)
+                    })
+                    .style(icon_button_style)
                     .padding(6),
-                text("Delete").size(11),
+                text(if is_detail_open {
+                    "Hide details"
+                } else {
+                    "Show details"
+                })
+                .size(11),
                 tooltip::Position::Top,
             )
             .into(),
-        ];
+        );
+    }
 
-        if has_detail {
-            items.push(
-                tooltip(
-                    button(text(detail_arrow).size(12))
-                        .on_press(if is_detail_open {
-                            Message::DetailClosed
-                        } else {
-                            Message::DetailRequested(id)
-                        })
-                        .style(icon_button_style)
-                        .padding(6),
-                    text(if is_detail_open {
-                        "Hide details"
-                    } else {
-                        "Show details"
-                    })
-                    .size(11),
-                    tooltip::Position::Top,
-                )
-                .into(),
-            );
-        }
-
-        container(row(items).spacing(2).align_y(Alignment::Center))
-            .width(Length::Fixed(SECONDARY_ACTIONS_WIDTH))
-            .align_x(Alignment::End)
-            .into()
-    } else {
-        Space::new()
-            .width(Length::Fixed(SECONDARY_ACTIONS_WIDTH))
-            .into()
-    };
-
-    row![favorite_button, secondary]
-        .spacing(2)
-        .align_y(Alignment::Center)
-        .into()
-}
-
-// ------------------------------------------------------------------
-// Detail panel
-// ------------------------------------------------------------------
-
-fn detail_panel<'a>(
-    app: &'a RingboardApp,
-    entry: &'a UiEntry,
-    id: u64,
-    radius: f32,
-) -> Element<'a, Message> {
-    let content: Element<Message> = match &app.state.ui.detailed_entry {
-        None => text("Loading details...")
-            .size(13)
-            .font(app.state.theme.font())
-            .into(),
-        Some(DetailedEntry {
-            mime_type,
-            full_text,
-        }) => {
-            let mut col = column![].spacing(6);
-
-            if !mime_type.is_empty() {
-                col = col.push(
-                    row![
-                        text("MIME:").size(12).font(app.state.theme.font()),
-                        text(mime_type.as_ref())
-                            .size(12)
-                            .font(app.state.theme.mono_font()),
-                    ]
-                    .spacing(6),
-                );
-            }
-
-            if let Some(full) = full_text {
-                col = col.push(
-                    scrollable(
-                        text(&**full)
-                            .font(app.state.theme.mono_font())
-                            .size(app.state.theme.mono_font_size())
-                            .width(Length::Fill),
-                    )
-                    .height(Length::Fixed(200.0)),
-                );
-            } else if matches!(entry.cache, UiEntryCache::Image) {
-                if let Some(handle) = app.image_cache.get(&id) {
-                    col = col.push(
-                        scrollable(image(handle.clone()).width(Length::Fill))
-                            .height(Length::Fixed(300.0)),
-                    );
-                }
-            } else {
-                col = col.push(text("Binary data").size(12).font(app.state.theme.font()));
-            }
-
-            col.into()
-        }
-    };
-
-    container(content)
-        .style(move |theme: &iced::Theme| detail_panel_style(theme, radius))
-        .padding(app.state.theme.input_padding())
-        .width(Length::Fill)
-        .into()
+    container(
+        row![favorite_button, row(items).spacing(2)]
+            .spacing(2)
+            .align_y(Alignment::Center),
+    )
+    .width(Length::Fixed(ACTIONS_WIDTH))
+    .align_x(Alignment::End)
+    .into()
 }
 
 // ------------------------------------------------------------------
 // Settings
 // ------------------------------------------------------------------
 
+/// A settings group, set off from the next one by an uppercase label and a
+/// hairline underneath rather than a filled box.
 fn settings_section<'a>(
     app: &'a RingboardApp,
     title: &'a str,
     body: Element<'a, Message>,
-    radius: f32,
 ) -> Element<'a, Message> {
-    container(
-        column![text(title).size(14).font(app.state.theme.font()), body]
-            .spacing(10)
-            .width(Length::Fill),
-    )
-    .style(move |theme: &iced::Theme| search_bar_style(theme, radius))
-    .padding(app.state.theme.input_padding())
+    column![
+        text(title.to_uppercase())
+            .size(11)
+            .font(app.state.theme.font())
+            .color(
+                app.state
+                    .theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.55)
+            ),
+        hairline(),
+        body,
+    ]
+    .spacing(8)
     .width(Length::Fill)
     .into()
 }
@@ -604,7 +600,6 @@ fn settings_view(app: &RingboardApp, radius: f32) -> Element<'_, Message> {
         ]
         .spacing(8)
         .into(),
-        radius,
     );
 
     let maintenance = settings_section(
@@ -634,10 +629,9 @@ fn settings_view(app: &RingboardApp, radius: f32) -> Element<'_, Message> {
         ]
         .spacing(8)
         .into(),
-        radius,
     );
 
-    let mut col = column![server_limits, maintenance].spacing(12);
+    let mut col = column![server_limits, maintenance].spacing(24);
 
     if let Some(ref status) = settings.status {
         let (message, is_err) = match status {
@@ -745,7 +739,7 @@ fn error_banner<'a>(
 // Fast paste bar
 // ------------------------------------------------------------------
 
-fn fast_paste_bar<'a>(app: &'a RingboardApp, radius: f32) -> Element<'a, Message> {
+fn fast_paste_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
     let nav = app.nav_entries();
     let chips: Vec<Element<Message>> = nav
         .iter()
@@ -776,16 +770,19 @@ fn fast_paste_bar<'a>(app: &'a RingboardApp, radius: f32) -> Element<'a, Message
         return Space::new().into();
     }
 
-    container(
-        row![
-            text("Fast paste:").size(11).font(app.state.theme.font()),
-            row(chips).spacing(4),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
-    .style(move |theme: &iced::Theme| search_bar_style(theme, radius))
-    .padding(Padding::new(6.0))
+    column![
+        hairline(),
+        container(
+            row![
+                text("Fast paste:").size(11).font(app.state.theme.font()),
+                row(chips).spacing(4),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding(Padding::new(6.0).top(0.0)),
+    ]
+    .spacing(6)
     .width(Length::Fill)
     .into()
 }
@@ -794,7 +791,7 @@ fn fast_paste_bar<'a>(app: &'a RingboardApp, radius: f32) -> Element<'a, Message
 // Status bar
 // ------------------------------------------------------------------
 
-fn status_bar<'a>(app: &'a RingboardApp, radius: f32) -> Element<'a, Message> {
+fn status_bar<'a>(app: &'a RingboardApp) -> Element<'a, Message> {
     let filtered = app.filtered_entries();
     let pinned: Vec<&UiEntry> = filtered
         .iter()
@@ -820,18 +817,21 @@ fn status_bar<'a>(app: &'a RingboardApp, radius: f32) -> Element<'a, Message> {
 
     let shortcuts = "Enter paste  \u{b7}  Esc clear/exit  \u{b7}  Ctrl+D detail  \u{b7}  Ctrl+R refresh  \u{b7}  Ctrl+0-9 paste  \u{b7}  Alt+X search kind";
 
-    container(
-        row![
-            text(counts).size(11).font(app.state.theme.font()),
-            text(loading).size(11).font(app.state.theme.font()),
-            Space::new().width(Length::Fill),
-            text(shortcuts).size(10).font(app.state.theme.mono_font()),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    )
-    .style(move |theme: &iced::Theme| search_bar_style(theme, radius))
-    .padding(Padding::new(6.0))
+    column![
+        hairline(),
+        container(
+            row![
+                text(counts).size(11).font(app.state.theme.font()),
+                text(loading).size(11).font(app.state.theme.font()),
+                Space::new().width(Length::Fill),
+                text(shortcuts).size(10).font(app.state.theme.mono_font()),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        )
+        .padding(Padding::new(6.0).top(0.0)),
+    ]
+    .spacing(6)
     .width(Length::Fill)
     .into()
 }

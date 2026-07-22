@@ -38,8 +38,14 @@ pub type LoadedImagePending = std::collections::HashSet<u64>;
 pub struct RingboardApp {
     pub requests: Sender<Command>,
     pub state: State,
+    /// Downscaled row-preview thumbnails, kept for every visible image entry.
     pub image_cache: ImageCache,
     pub loaded_image_pending: LoadedImagePending,
+    /// Full-resolution images, fetched lazily only for the entry currently
+    /// shown in the detail panel (evicted when it closes) so we're not
+    /// holding a full-res decode in memory for every image in the list.
+    pub image_detail_cache: ImageCache,
+    pub loaded_detail_image_pending: LoadedImagePending,
     /// Whether closing the window should hide it (resuming instantly on the
     /// next launch) instead of exiting the process, mirroring the egui
     /// client's background behavior.
@@ -143,6 +149,8 @@ impl RingboardApp {
             state,
             image_cache: ImageCache::default(),
             loaded_image_pending: LoadedImagePending::default(),
+            image_detail_cache: ImageCache::default(),
+            loaded_detail_image_pending: LoadedImagePending::default(),
             daemon,
             stop,
             window_id: None,
@@ -174,6 +182,7 @@ impl RingboardApp {
             }
             Message::WakeRequested => self.wake(),
             Message::ImageDecoded(id, result) => self.handle_image_decoded(id, result),
+            Message::DetailImageDecoded(id, result) => self.handle_detail_image_decoded(id, result),
             Message::SearchChanged(query) => self.handle_search_changed(query),
             Message::SearchKindToggled => self.toggle_search_kind(),
             Message::TabSelected(tab) => self.select_tab(tab),
@@ -188,6 +197,10 @@ impl RingboardApp {
             Message::DeleteEntry(id) => self.delete(id),
             Message::DetailRequested(id) => self.open_detail(id),
             Message::DetailClosed => {
+                if let Some(id) = self.state.ui.details_requested {
+                    self.image_detail_cache.remove(&id);
+                    self.loaded_detail_image_pending.remove(&id);
+                }
                 self.state.ui.details_requested = None;
                 self.state.ui.detailed_entry = None;
                 Task::none()
@@ -370,8 +383,9 @@ impl RingboardApp {
                 with_text: has_text,
             });
             if is_image {
-                self.request_image(id);
+                self.request_detail_image(id);
             }
+            return self.scroll_to_entry(id);
         }
         Task::none()
     }
@@ -407,6 +421,8 @@ impl RingboardApp {
         self.state.reset();
         self.image_cache.clear();
         self.loaded_image_pending.clear();
+        self.image_detail_cache.clear();
+        self.loaded_detail_image_pending.clear();
         // Minimizing is respected far more consistently across window
         // managers than `Mode::Hidden` (e.g. GNOME/mutter's client-side
         // decoration frame doesn't reliably follow `set_visible(false)`).
@@ -518,6 +534,8 @@ impl RingboardApp {
         self.state.ui.search_highlighted_id = None;
         self.image_cache.clear();
         self.loaded_image_pending.clear();
+        self.image_detail_cache.clear();
+        self.loaded_detail_image_pending.clear();
         self.refresh_entries()
     }
 
@@ -560,7 +578,6 @@ impl RingboardApp {
         id: u64,
         result: Result<image_crate::DynamicImage, String>,
     ) -> Task<Message> {
-        self.loaded_image_pending.remove(&id);
         match result {
             Ok(img) => {
                 let max_w = 320;
@@ -587,6 +604,36 @@ impl RingboardApp {
         Task::none()
     }
 
+    /// Like [`Self::handle_image_decoded`], but keeps the image at full
+    /// resolution instead of downscaling to a thumbnail, since this one is
+    /// only ever decoded for the entry currently open in the detail panel.
+    fn handle_detail_image_decoded(
+        &mut self,
+        id: u64,
+        result: Result<image_crate::DynamicImage, String>,
+    ) -> Task<Message> {
+        match result {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                self.image_detail_cache
+                    .insert(id, image::Handle::from_rgba(w, h, rgba.into_raw()));
+                if self.state.ui.details_requested == Some(id) {
+                    // Aspect ratio may differ from the thumbnail fallback;
+                    // keep the row in view after it resizes.
+                    return self.scroll_to_entry(id);
+                }
+            }
+            Err(e) => {
+                self.state.ui.last_error = Some(CommandError::Core(CoreError::Io {
+                    error: io::Error::other(e),
+                    context: "image decode".into(),
+                }));
+            }
+        }
+        Task::none()
+    }
+
     // ------------------------------------------------------------------
     // Controller message handling
     // ------------------------------------------------------------------
@@ -596,8 +643,15 @@ impl RingboardApp {
             return Task::none();
         };
         if let ControllerMessage::LoadedImage { id, image } = msg {
-            if !self.loaded_image_pending.contains(&id) {
-                self.loaded_image_pending.insert(id);
+            // Detail requests and thumbnail requests are tracked in separate
+            // pending sets (see `request_image`/`request_detail_image`), so
+            // route this response to whichever one is actually waiting on it.
+            if self.loaded_detail_image_pending.remove(&id) {
+                return Task::perform(decode_image_async(id, image), |(id, result)| {
+                    Message::DetailImageDecoded(id, result)
+                });
+            }
+            if self.loaded_image_pending.remove(&id) {
                 return Task::perform(decode_image_async(id, image), |(id, result)| {
                     Message::ImageDecoded(id, result)
                 });
@@ -633,6 +687,9 @@ impl RingboardApp {
             ControllerMessage::EntryDetails { id, result } => {
                 if self.state.ui.details_requested == Some(id) {
                     self.state.ui.detailed_entry = result.ok();
+                    // The row likely just grew (one-liner -> full text); keep
+                    // it in view instead of letting it drift off-screen.
+                    return self.scroll_to_entry(id);
                 }
                 Task::none()
             }
@@ -831,38 +888,68 @@ impl RingboardApp {
     }
 
     /// Keeps the highlighted entry roughly in view after keyboard
-    /// navigation. Approximate (based on row index, not pixel position)
-    /// since row heights vary (text vs. image previews).
+    /// navigation.
     fn scroll_to_highlighted(&self) -> Task<Message> {
+        let Some(id) = self.current_highlight_id() else {
+            return Task::none();
+        };
+        self.scroll_to_entry(id)
+    }
+
+    /// A rough relative weight for how tall a row's rendered height is,
+    /// used to convert its position in the list into a scroll fraction.
+    /// Rows aren't uniform height (collapsed text/image previews vs. an
+    /// expanded detail panel), so a plain `index / count` fraction badly
+    /// misjudges where a big expanded row (e.g. a detail image, capped at
+    /// ~400px vs. a normal ~40px row) actually sits, and can scroll it
+    /// clean out of view.
+    fn row_weight(&self, entry: &UiEntry) -> f32 {
+        let expanded = self.state.ui.details_requested == Some(entry.entry.id());
+        match entry.cache {
+            UiEntryCache::Image if expanded => 10.0,
+            UiEntryCache::Text { .. } | UiEntryCache::HighlightedText { .. } if expanded => 8.0,
+            UiEntryCache::Image => 1.6,
+            _ => 1.0,
+        }
+    }
+
+    /// Keeps a specific entry roughly in view, e.g. after it's expanded (or
+    /// its expanded content resizes) rather than only on keyboard
+    /// navigation. See [`Self::row_weight`] for why this is weighted
+    /// instead of a plain index fraction.
+    fn scroll_to_entry(&self, id: u64) -> Task<Message> {
         let show_sections =
             self.state.ui.query.is_empty() && self.state.ui.active_tab == ActiveTab::All;
         let filtered = self.filtered_entries();
-        let render_order: Vec<u64> = if show_sections {
+        let render_order: Vec<&UiEntry> = if show_sections {
             let pinned = filtered
                 .iter()
+                .copied()
                 .filter(|e| e.entry.ring() == RingKind::Favorites);
             let unpinned = filtered
                 .iter()
+                .copied()
                 .filter(|e| e.entry.ring() == RingKind::Main);
             if self.state.ui.pinned_expanded {
-                pinned.chain(unpinned).map(|e| e.entry.id()).collect()
+                pinned.chain(unpinned).collect()
             } else {
-                unpinned.map(|e| e.entry.id()).collect()
+                unpinned.collect()
             }
         } else {
-            filtered.iter().map(|e| e.entry.id()).collect()
+            filtered
         };
 
-        let Some(current_id) = self.current_highlight_id() else {
+        let Some(idx) = render_order.iter().position(|e| e.entry.id() == id) else {
             return Task::none();
         };
-        let Some(idx) = render_order.iter().position(|&id| id == current_id) else {
-            return Task::none();
-        };
-        let fraction = if render_order.len() <= 1 {
+
+        let weights: Vec<f32> = render_order.iter().map(|e| self.row_weight(e)).collect();
+        let total: f32 = weights.iter().sum();
+        let before: f32 = weights[..idx].iter().sum();
+        let fraction = if total <= f32::EPSILON {
             0.0
         } else {
-            idx as f32 / (render_order.len() - 1) as f32
+            (before / total).clamp(0.0, 1.0)
         };
 
         operation::snap_to(
@@ -881,6 +968,20 @@ impl RingboardApp {
 
     fn request_image(&mut self, id: u64) {
         if !self.loaded_image_pending.contains(&id) && !self.image_cache.contains_key(&id) {
+            self.loaded_image_pending.insert(id);
+            let _ = self.requests.send(Command::LoadImage(id));
+        }
+    }
+
+    /// Requests a fresh, full-resolution decode of an image for the detail
+    /// panel. Kept separate from [`Self::request_image`]'s thumbnail cache so
+    /// we only ever hold one full-res image in memory at a time (the one
+    /// currently on screen), rather than for every visible row.
+    fn request_detail_image(&mut self, id: u64) {
+        if !self.loaded_detail_image_pending.contains(&id)
+            && !self.image_detail_cache.contains_key(&id)
+        {
+            self.loaded_detail_image_pending.insert(id);
             let _ = self.requests.send(Command::LoadImage(id));
         }
     }

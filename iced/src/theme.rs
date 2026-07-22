@@ -61,41 +61,26 @@ impl Default for ThemeManager {
     }
 }
 
-pub fn card_style(theme: &Theme, highlighted: bool, radius: f32) -> container::Style {
+/// Flat row background: no shape when idle, a plain tint on hover, a
+/// stronger tint when selected. No border, no shadow, no boxed "card".
+pub fn row_style(theme: &Theme, selected: bool, hovered: bool, radius: f32) -> container::Style {
     let palette = theme.extended_palette();
-    let bg = if highlighted {
-        palette.primary.weak.color
+    let bg = if selected {
+        Some(palette.primary.weak.color)
+    } else if hovered {
+        Some(palette.background.weak.color)
     } else {
-        palette.background.weak.color
+        None
     };
     container::Style {
-        background: Some(Background::Color(bg)),
-        border: Border {
-            color: Color::TRANSPARENT,
-            width: 0.0,
-            radius: radius.into(),
-        },
-        shadow: Shadow::default(),
-        text_color: None,
-        snap: false,
-    }
-}
-
-/// Left-edge indicator strip for the keyboard-selected entry row.
-pub fn accent_bar_style(theme: &Theme, active: bool, radius: f32) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(Background::Color(if active {
-            palette.primary.strong.color
-        } else {
-            Color::TRANSPARENT
-        })),
+        background: bg.map(Background::Color),
         border: Border {
             radius: radius.into(),
             ..Border::default()
         },
+        shadow: Shadow::default(),
+        text_color: None,
         snap: false,
-        ..container::Style::default()
     }
 }
 
@@ -124,9 +109,8 @@ pub fn error_banner_style(theme: &Theme, radius: f32) -> container::Style {
     container::Style {
         background: Some(Background::Color(palette.danger.weak.color)),
         border: Border {
-            color: palette.danger.strong.color,
-            width: 1.0,
             radius: radius.into(),
+            ..Border::default()
         },
         text_color: Some(palette.danger.strong.text),
         snap: false,
@@ -139,25 +123,10 @@ pub fn warning_banner_style(theme: &Theme, radius: f32) -> container::Style {
     container::Style {
         background: Some(Background::Color(palette.warning.weak.color)),
         border: Border {
-            color: palette.warning.strong.color,
-            width: 1.0,
             radius: radius.into(),
+            ..Border::default()
         },
         text_color: Some(palette.warning.strong.text),
-        snap: false,
-        ..container::Style::default()
-    }
-}
-
-pub fn detail_panel_style(theme: &Theme, radius: f32) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(Background::Color(palette.background.strong.color)),
-        border: Border {
-            color: palette.background.weak.text,
-            width: 1.0,
-            radius: radius.into(),
-        },
         snap: false,
         ..container::Style::default()
     }
@@ -166,35 +135,11 @@ pub fn detail_panel_style(theme: &Theme, radius: f32) -> container::Style {
 pub fn search_bar_style(theme: &Theme, radius: f32) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {
-        background: Some(Background::Color(palette.background.strong.color)),
+        background: Some(Background::Color(palette.background.weak.color)),
         border: Border {
-            color: palette.background.weak.text,
-            width: 1.0,
             radius: radius.into(),
+            ..Border::default()
         },
-        snap: false,
-        ..container::Style::default()
-    }
-}
-
-pub fn badge_style(theme: &Theme, radius: f32, primary: bool) -> container::Style {
-    let palette = theme.extended_palette();
-    let (bg, fg) = if primary {
-        (palette.primary.weak.color, palette.primary.strong.text)
-    } else {
-        (
-            palette.background.strong.color,
-            palette.background.base.text,
-        )
-    };
-    container::Style {
-        background: Some(Background::Color(bg)),
-        border: Border {
-            color: fg,
-            width: 0.0,
-            radius: radius.into(),
-        },
-        text_color: Some(fg),
         snap: false,
         ..container::Style::default()
     }
