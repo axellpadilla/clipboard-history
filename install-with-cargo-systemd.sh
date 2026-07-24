@@ -34,26 +34,53 @@ if [ -z "$RINGBOARD_TARGET" ]; then
 fi
 
 mkdir -p ~/.cargo/bin
+# install_bin below downloads straight to ~/.cargo/bin instead of going
+# through `cargo install`, so unlike upstream we can't assume cargo has
+# already put it on PATH (e.g. via ~/.profile). Export it ourselves so the
+# `which ringboard-*` calls below actually resolve.
+export PATH="$HOME/.cargo/bin:$PATH"
 
-# Downloads a release binary asset for the current target and installs it as
-# a `ringboard-*` binary on PATH.
-install_bin() {
-  local bin="$1"
-  curl -sL "$RELEASE_BASE/$RINGBOARD_TARGET-$bin" -o ~/.cargo/bin/"$bin"
-  chmod +x ~/.cargo/bin/"$bin"
+# Downloads $1 to the curl args in $2.., failing loudly (instead of silently
+# writing an empty/error-page file) if the request doesn't succeed.
+fetch() {
+  local url="$1"
+  shift
+  if ! curl -sSfL "$url" "$@"; then
+    echo "Failed to download $url" >&2
+    exit 1
+  fi
 }
 
-curl -s "$RAW_BASE/ringboard.slice" --create-dirs -O --output-dir ~/.config/systemd/user/
+# Downloads a release binary asset for the current target and installs it as
+# a `ringboard-*` binary on PATH. Downloads to a temp file first and only
+# chmods/moves it into place once the download fully succeeds, so a failed
+# or partial download (e.g. a 404 HTML page) never becomes a broken live
+# binary, and the atomic rename means a currently-running process keeps
+# executing its old binary safely instead of being corrupted mid-read.
+install_bin() {
+  local bin="$1"
+  local tmp
+  tmp="$(mktemp ~/.cargo/bin/."$bin".XXXXXX)"
+  if ! curl -sSfL "$RELEASE_BASE/$RINGBOARD_TARGET-$bin" -o "$tmp"; then
+    echo "Failed to download $bin from $RELEASE_BASE/$RINGBOARD_TARGET-$bin" >&2
+    rm -f "$tmp"
+    exit 1
+  fi
+  chmod +x "$tmp"
+  mv -f "$tmp" ~/.cargo/bin/"$bin"
+}
+
+fetch "$RAW_BASE/ringboard.slice" --create-dirs -O --output-dir ~/.config/systemd/user/
 
 install_bin ringboard-server
-curl -s "$RAW_BASE/server/ringboard-server.service" --create-dirs -O --output-dir ~/.config/systemd/user/
+fetch "$RAW_BASE/server/ringboard-server.service" --create-dirs -O --output-dir ~/.config/systemd/user/
 sed -i "s|ExecStart=ringboard-server|ExecStart=$(which ringboard-server)|g" ~/.config/systemd/user/ringboard-server.service
 
 install_bin ringboard
 
 install_bin ringboard-$RINGBOARD_CLIENT
-curl -s "$RAW_BASE/$RINGBOARD_CLIENT/ringboard-$RINGBOARD_CLIENT.desktop" --create-dirs -O --output-dir ~/.local/share/applications/
-curl -s "$RAW_BASE/logo.jpeg" -o ringboard.jpeg --create-dirs -O --output-dir ~/.local/share/icons/hicolor/1024x1024/
+fetch "$RAW_BASE/$RINGBOARD_CLIENT/ringboard-$RINGBOARD_CLIENT.desktop" --create-dirs -O --output-dir ~/.local/share/applications/
+fetch "$RAW_BASE/logo.jpeg" -o ringboard.jpeg --create-dirs -O --output-dir ~/.local/share/icons/hicolor/1024x1024/
 sed -i "s|Exec=ringboard-$RINGBOARD_CLIENT|Exec=$(echo $(which ringboard-$RINGBOARD_CLIENT) toggle)|g" ~/.local/share/applications/ringboard-$RINGBOARD_CLIENT.desktop
 sed -i "s|Icon=ringboard|Icon=$HOME/.local/share/icons/hicolor/1024x1024/ringboard.jpeg|g" ~/.local/share/applications/ringboard-$RINGBOARD_CLIENT.desktop
 
@@ -76,12 +103,13 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
 fi
 
 install_bin ringboard-$XDG_SESSION_TYPE
-curl -s "$RAW_BASE/$XDG_SESSION_TYPE/ringboard-$XDG_SESSION_TYPE.service" -O --output-dir ~/.config/systemd/user/
+fetch "$RAW_BASE/$XDG_SESSION_TYPE/ringboard-$XDG_SESSION_TYPE.service" --create-dirs -O --output-dir ~/.config/systemd/user/
 sed -i "s|ExecStart=ringboard-$XDG_SESSION_TYPE|ExecStart=$(which ringboard-$XDG_SESSION_TYPE)|g" ~/.config/systemd/user/ringboard-$XDG_SESSION_TYPE.service
 
 killall ringboard-egui ringboard-iced ringboard-tui 2> /dev/null || true
 
-systemctl --user stop ringboard-server
+# The service won't exist yet on a first install.
+systemctl --user stop ringboard-server 2> /dev/null || true
 systemctl --user daemon-reload
 systemctl --user start ringboard-server
 systemctl --user enable ringboard-$XDG_SESSION_TYPE --now
