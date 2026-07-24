@@ -13,10 +13,21 @@ if [ "$RINGBOARD_CLIENT" = "egui" ]; then
   RINGBOARD_OTHER_CLIENT="iced"
 fi
 
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/ringboard.slice --create-dirs -O --output-dir ~/.config/systemd/user/
+# Downloads $1 to the curl args in $2.., failing loudly (instead of silently
+# writing an empty/error-page file) if the request doesn't succeed.
+fetch() {
+  local url="$1"
+  shift
+  if ! curl -sSfL "$url" "$@"; then
+    echo "Failed to download $url" >&2
+    exit 1
+  fi
+}
+
+fetch https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/ringboard.slice --create-dirs -O --output-dir ~/.config/systemd/user/
 
 cargo install clipboard-history-server --no-default-features --features systemd
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/server/ringboard-server.service --create-dirs -O --output-dir ~/.config/systemd/user/
+fetch https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/server/ringboard-server.service --create-dirs -O --output-dir ~/.config/systemd/user/
 sed -i "s|ExecStart=ringboard-server|ExecStart=$(which ringboard-server)|g" ~/.config/systemd/user/ringboard-server.service
 
 cargo install clipboard-history
@@ -26,8 +37,8 @@ if [ "$RINGBOARD_CLIENT" = "egui" ]; then
 else
   cargo install clipboard-history-iced
 fi
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/$RINGBOARD_CLIENT/ringboard-$RINGBOARD_CLIENT.desktop --create-dirs -O --output-dir ~/.local/share/applications/
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/logo.jpeg -o ringboard.jpeg --create-dirs -O --output-dir ~/.local/share/icons/hicolor/1024x1024/
+fetch https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/$RINGBOARD_CLIENT/ringboard-$RINGBOARD_CLIENT.desktop --create-dirs -O --output-dir ~/.local/share/applications/
+fetch https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/logo.jpeg -o ringboard.jpeg --create-dirs -O --output-dir ~/.local/share/icons/hicolor/1024x1024/
 sed -i "s|Exec=ringboard-$RINGBOARD_CLIENT|Exec=$(echo $(which ringboard-$RINGBOARD_CLIENT) toggle)|g" ~/.local/share/applications/ringboard-$RINGBOARD_CLIENT.desktop
 sed -i "s|Icon=ringboard|Icon=$HOME/.local/share/icons/hicolor/1024x1024/ringboard.jpeg|g" ~/.local/share/applications/ringboard-$RINGBOARD_CLIENT.desktop
 
@@ -50,12 +61,13 @@ if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
 fi
 
 cargo install clipboard-history-$XDG_SESSION_TYPE --no-default-features
-curl -s https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/$XDG_SESSION_TYPE/ringboard-$XDG_SESSION_TYPE.service -O --output-dir ~/.config/systemd/user/
+fetch https://raw.githubusercontent.com/SUPERCILEX/clipboard-history/master/$XDG_SESSION_TYPE/ringboard-$XDG_SESSION_TYPE.service --create-dirs -O --output-dir ~/.config/systemd/user/
 sed -i "s|ExecStart=ringboard-$XDG_SESSION_TYPE|ExecStart=$(which ringboard-$XDG_SESSION_TYPE)|g" ~/.config/systemd/user/ringboard-$XDG_SESSION_TYPE.service
 
 killall ringboard-egui ringboard-iced ringboard-tui 2> /dev/null || true
 
-systemctl --user stop ringboard-server
+# The service won't exist yet on a first install.
+systemctl --user stop ringboard-server 2> /dev/null || true
 systemctl --user daemon-reload
 systemctl --user start ringboard-server
 systemctl --user enable ringboard-$XDG_SESSION_TYPE --now
