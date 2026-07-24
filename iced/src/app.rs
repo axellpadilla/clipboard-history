@@ -115,6 +115,27 @@ pub const WINDOW_MIN_SIZE: iced::Size = iced::Size::new(400.0, 480.0);
 pub const WINDOW_DEFAULT_SIZE: iced::Size = iced::Size::new(600.0, 650.0);
 pub const WINDOW_MAX_SIZE: iced::Size = iced::Size::new(800.0, 900.0);
 
+/// Shared between the initial window `main` boots with and every window
+/// `wake` opens afresh — see `hide_window`/`wake` for why the window is
+/// fully closed and reopened instead of hidden/restored in place.
+pub fn window_settings() -> window::Settings {
+    window::Settings {
+        size: WINDOW_DEFAULT_SIZE,
+        min_size: Some(WINDOW_MIN_SIZE),
+        max_size: Some(WINDOW_MAX_SIZE),
+        position: iced::window::Position::Centered,
+        // Left unset, this comes out as an empty WM_CLASS/app_id on both
+        // X11 and Wayland (iced_winit passes it through verbatim, with no
+        // fallback to the executable name), which breaks window-manager/
+        // taskbar association with a .desktop entry's StartupWMClass.
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: "ringboard-iced".into(),
+            ..window::settings::PlatformSpecific::default()
+        },
+        ..window::Settings::default()
+    }
+}
+
 /// Bridges the background controller thread's blocking `Receiver` into an
 /// async stream, so the UI is woken only when a message actually arrives
 /// instead of polling on a timer.
@@ -467,13 +488,16 @@ impl RingboardApp {
         self.window_id.get_or_insert(id);
         match event {
             window::Event::Focused => operation::focus(crate::widgets::search_input_id()),
-            // `window::gain_focus` is a no-op under Wayland (winit has no
-            // xdg_activation-token plumbing for it), so a `toggle` invocation
-            // can only reliably bring the window back via the minimize ->
-            // unminimize transition, which compositors do focus as a side
-            // effect. Auto-hiding on focus loss guarantees the window is
-            // always either focused or truly minimized, so it never gets
-            // stuck visible-but-unfocused where toggle can't recover it.
+            // Both `window::gain_focus` and unminimizing are hard no-ops
+            // under Wayland (winit: `focus_window` is an empty stub there;
+            // `set_minimized(false)` just logs "Unminimizing is ignored on
+            // Wayland" and returns — xdg-shell's protocol has no client
+            // request to restore a minimized/hidden window at all). So
+            // hiding on focus loss guarantees the window is always either
+            // focused-and-visible or fully closed, and `wake` recovers it by
+            // opening a brand new window instead of trying to un-hide the
+            // old one — new toplevels get focused by the compositor by
+            // default, which is the one path that's actually reliable here.
             window::Event::Unfocused if self.daemon => self.hide_window(id),
             window::Event::CloseRequested => {
                 if self.daemon {
@@ -502,10 +526,13 @@ impl RingboardApp {
         self.state.reset();
         self.thumbnails.clear();
         self.detail_images.clear();
-        // Minimizing is respected far more consistently across window
-        // managers than `Mode::Hidden` (e.g. GNOME/mutter's client-side
-        // decoration frame doesn't reliably follow `set_visible(false)`).
-        window::minimize(id, true)
+        // Actually close the window rather than minimize/hide it in place:
+        // neither unminimizing nor a bare focus request can bring a window
+        // back on Wayland (see the comment on the `Unfocused` match arm
+        // above), so there's nothing to gain from keeping the old one
+        // around — `wake` opens a fresh one instead.
+        self.window_id = None;
+        window::close(id)
     }
 
     fn exit(&self) -> Task<Message> {
@@ -516,12 +543,21 @@ impl RingboardApp {
 
     /// Called when another `toggle` invocation asked us to wake up.
     fn wake(&mut self) -> Task<Message> {
-        let Some(id) = self.window_id else {
-            return Task::none();
-        };
+        if let Some(id) = self.window_id {
+            // Shouldn't normally happen (`wake` only fires while hidden,
+            // i.e. closed), but if the window's somehow already open, just
+            // try to bring it forward rather than opening a second one.
+            return Task::batch([
+                window::gain_focus(id),
+                operation::focus(crate::widgets::search_input_id()),
+                self.refresh_entries(),
+            ]);
+        }
+
+        let (id, open) = window::open(window_settings());
+        self.window_id = Some(id);
         Task::batch([
-            window::minimize(id, false),
-            window::gain_focus(id),
+            open.discard(),
             operation::focus(crate::widgets::search_input_id()),
             self.refresh_entries(),
         ])

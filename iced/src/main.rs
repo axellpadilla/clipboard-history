@@ -1,6 +1,6 @@
 use std::{cell::RefCell, env, ffi::OsStr};
 
-use iced::{application, window};
+use iced::application;
 
 mod app;
 mod message;
@@ -47,21 +47,10 @@ fn main() -> iced::Result {
     // window opens once at a reasonable middle-of-the-range size and stays
     // there — `min_size`/`max_size` still bound how far the user can drag
     // it manually, which doesn't hit the same bug.
-    .window(window::Settings {
-        size: app::WINDOW_DEFAULT_SIZE,
-        min_size: Some(app::WINDOW_MIN_SIZE),
-        max_size: Some(app::WINDOW_MAX_SIZE),
-        // Left unset, this comes out as an empty WM_CLASS/app_id on both
-        // X11 and Wayland (iced_winit passes it through verbatim, with no
-        // fallback to the executable name), which breaks window-manager/
-        // taskbar association with a .desktop entry's StartupWMClass.
-        platform_specific: window::settings::PlatformSpecific {
-            application_id: "ringboard-iced".into(),
-            ..window::settings::PlatformSpecific::default()
-        },
-        ..window::Settings::default()
-    })
-    .centered()
+    //
+    // Shared with `wake`, which opens a brand new window every time the
+    // daemon is toggled back from hidden (see app.rs for why).
+    .window(app::window_settings())
     .run();
 
     if daemon {
