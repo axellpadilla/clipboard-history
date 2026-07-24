@@ -467,6 +467,14 @@ impl RingboardApp {
         self.window_id.get_or_insert(id);
         match event {
             window::Event::Focused => operation::focus(crate::widgets::search_input_id()),
+            // `window::gain_focus` is a no-op under Wayland (winit has no
+            // xdg_activation-token plumbing for it), so a `toggle` invocation
+            // can only reliably bring the window back via the minimize ->
+            // unminimize transition, which compositors do focus as a side
+            // effect. Auto-hiding on focus loss guarantees the window is
+            // always either focused or truly minimized, so it never gets
+            // stuck visible-but-unfocused where toggle can't recover it.
+            window::Event::Unfocused if self.daemon => self.hide_window(id),
             window::Event::CloseRequested => {
                 if self.daemon {
                     self.hide_window(id)
