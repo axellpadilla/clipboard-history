@@ -17,6 +17,8 @@ use std::{
         unix::ffi::OsStrExt,
     },
     rc::Rc,
+    thread,
+    time::Duration,
 };
 
 use arrayvec::ArrayVec;
@@ -51,7 +53,7 @@ use rustix::{
 };
 use thiserror::Error;
 use wayland_client::{
-    ConnectError, Connection, Dispatch, DispatchError, Proxy, QueueHandle,
+    ConnectError, Connection, Dispatch, DispatchError, EventQueue, Proxy, QueueHandle,
     backend::WaylandError,
     event_created_child,
     protocol::{
@@ -147,6 +149,13 @@ fn load_config() -> Result<config::wayland::Config, CliError> {
     Ok(toml::from_str::<config::wayland::Stable>(&config)?.into())
 }
 
+const OUT_START_IDX: u64 = IN_TRANSFER_BUFFERS as u64;
+const WAYLAND_IDX: u64 = OUT_START_IDX + OUT_TRANSFER_BUFFERS as u64;
+const PASTE_SERVER_IDX: u64 = WAYLAND_IDX + 1;
+
+const WAYLAND_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
+const WAYLAND_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(5);
+
 fn run() -> Result<(), CliError> {
     info!(
         "Starting Ringboard Wayland clipboard listener v{}.",
@@ -164,9 +173,6 @@ fn run() -> Result<(), CliError> {
     };
     debug!("Ringboard connection established.");
 
-    let conn = Connection::connect_to_env()?;
-    debug!("Wayland connection established.");
-
     let paste_socket = init_unix_server(paste_socket_file(), SocketType::DGRAM)?;
     debug!("Initialized paste server");
 
@@ -174,17 +180,14 @@ fn run() -> Result<(), CliError> {
 
     let epoll =
         epoll::create(epoll::CreateFlags::empty()).map_io_err(|| "Failed to create epoll.")?;
-    for (i, fd) in [conn.as_fd(), paste_socket.as_fd()].iter().enumerate() {
-        epoll::add(
-            &epoll,
-            fd,
-            epoll::EventData::new_u64(
-                u64::try_from(i + IN_TRANSFER_BUFFERS + OUT_TRANSFER_BUFFERS).unwrap(),
-            ),
-            epoll::EventFlags::IN,
-        )
-        .map_io_err(|| "Failed to register epoll interest.")?;
-    }
+    epoll::add(
+        &epoll,
+        paste_socket.as_fd(),
+        epoll::EventData::new_u64(PASTE_SERVER_IDX),
+        epoll::EventFlags::IN,
+    )
+    .map_io_err(|| "Failed to register epoll interest.")?;
+
     let mut app = App {
         inner: AppDefault::default(),
         epoll,
@@ -199,13 +202,141 @@ fn run() -> Result<(), CliError> {
         }),
     };
 
+    let mut deduplicator = CopyDeduplication::new()?;
+
+    // Wraps the Wayland session: if the compositor isn't up yet (e.g. still
+    // starting the session) or the connection is later severed (e.g. a
+    // compositor restart), reconnect with exponential backoff instead of
+    // exiting. This survives compositor restarts transparently, preserves
+    // the in-memory dedup/ringboard state above, and avoids hammering the
+    // service manager's restart rate limit.
+    let mut backoff = WAYLAND_RECONNECT_INITIAL_BACKOFF;
+    'reconnect: loop {
+        let (mut event_queue, qh) = match connect_wayland(&mut app) {
+            Ok(session) => session,
+            Err(e) => match classify_wayland_error(e) {
+                WaylandOutcome::Recoverable => {
+                    warn!("Wayland compositor unavailable. Retrying in {backoff:?}.");
+                    thread::sleep(backoff);
+                    backoff = (backoff * 2).min(WAYLAND_RECONNECT_MAX_BACKOFF);
+                    continue 'reconnect;
+                }
+                WaylandOutcome::Fatal(e) => return Err(e),
+            },
+        };
+        backoff = WAYLAND_RECONNECT_INITIAL_BACKOFF;
+
+        info!("Starting event loop.");
+        loop {
+            if let Some(e) = app.inner.error.take() {
+                return Err(e);
+            }
+            if let Err(e) = event_queue.flush() {
+                match classify_wayland_error(DispatchError::from(e).into()) {
+                    WaylandOutcome::Recoverable => {
+                        warn!("Lost Wayland connection. Reconnecting in {backoff:?}.");
+                        thread::sleep(backoff);
+                        backoff = (backoff * 2).min(WAYLAND_RECONNECT_MAX_BACKOFF);
+                        continue 'reconnect;
+                    }
+                    WaylandOutcome::Fatal(e) => return Err(e),
+                }
+            }
+
+            trace!("Waiting for event.");
+            let mut epoll_events = [MaybeUninit::uninit(); 4];
+            let (epoll_events, _) = match epoll::wait(&app.epoll, &mut epoll_events, None) {
+                Err(Errno::INTR) => continue,
+                r => r.map_io_err(|| "Failed to wait for epoll events.")?,
+            };
+            for &mut epoll::Event { flags: _, data } in epoll_events {
+                match data.u64() {
+                    idx @ ..OUT_START_IDX => app.inner.pending_offers.continue_transfer(
+                        &mut app.inner.tmp_file_unsupported,
+                        &server,
+                        &app.epoll,
+                        &mut deduplicator,
+                        usize::try_from(idx).unwrap(),
+                    )?,
+                    idx @ OUT_START_IDX..WAYLAND_IDX => app
+                        .inner
+                        .outgoing_transfers
+                        .continue_transfer(usize::try_from(idx).unwrap() - OUT_TRANSFER_BUFFERS)?,
+                    WAYLAND_IDX => {
+                        trace!("Wayland event received.");
+                        let count = match event_queue.prepare_read().unwrap().read() {
+                            Err(WaylandError::Io(e)) if e.kind() == WouldBlock => continue,
+                            Err(e) => match classify_wayland_error(DispatchError::from(e).into()) {
+                                WaylandOutcome::Recoverable => {
+                                    warn!("Lost Wayland connection. Reconnecting in {backoff:?}.");
+                                    thread::sleep(backoff);
+                                    backoff = (backoff * 2).min(WAYLAND_RECONNECT_MAX_BACKOFF);
+                                    continue 'reconnect;
+                                }
+                                WaylandOutcome::Fatal(e) => return Err(e),
+                            },
+                            Ok(count) => count,
+                        };
+                        trace!("Prepared {count} events.");
+                        if let Err(e) = event_queue.dispatch_pending(&mut app) {
+                            match classify_wayland_error(e.into()) {
+                                WaylandOutcome::Recoverable => {
+                                    warn!("Lost Wayland connection. Reconnecting in {backoff:?}.");
+                                    thread::sleep(backoff);
+                                    backoff = (backoff * 2).min(WAYLAND_RECONNECT_MAX_BACKOFF);
+                                    continue 'reconnect;
+                                }
+                                WaylandOutcome::Fatal(e) => return Err(e),
+                            }
+                        }
+                        trace!("Dispatched {count} events.");
+                    }
+                    PASTE_SERVER_IDX => handle_paste_event(
+                        &paste_socket,
+                        &mut ancillary_buf,
+                        &qh,
+                        app.inner.manager.as_ref(),
+                        app.inner.virtual_keyboard_manager.as_ref(),
+                        &mut app.inner.seats,
+                        auto_paste,
+                        &mut app.inner.pending_paste,
+                        &mut app.inner.sources,
+                        &server,
+                        &mut deduplicator,
+                    )?,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+}
+
+/// Establishes (or re-establishes) the Wayland connection and blocks until
+/// the compositor globals we depend on are bound. Resets all Wayland-scoped
+/// app state (seats, pending transfers, claimed selections) since none of it
+/// is valid across a reconnect; the caller's ringboard connection and
+/// dedup state are untouched.
+fn connect_wayland(app: &mut App) -> Result<(EventQueue<App>, QueueHandle<App>), CliError> {
+    let conn = Connection::connect_to_env()?;
+    debug!("Wayland connection established.");
+
+    epoll::add(
+        &app.epoll,
+        conn.as_fd(),
+        epoll::EventData::new_u64(WAYLAND_IDX),
+        epoll::EventFlags::IN,
+    )
+    .map_io_err(|| "Failed to register epoll interest.")?;
+
     let mut event_queue = conn.new_event_queue();
     let qh = event_queue.handle();
     conn.display().get_registry(&qh, ());
     drop(conn);
-    event_queue.roundtrip(&mut app)?;
 
-    if let Some(e) = app.inner.error {
+    app.inner = AppDefault::default();
+    event_queue.roundtrip(app)?;
+
+    if let Some(e) = app.inner.error.take() {
         return Err(e);
     }
     if app.inner.manager.is_none() {
@@ -222,63 +353,25 @@ fn run() -> Result<(), CliError> {
     }
     debug!("Wayland globals initialized.");
 
-    let mut deduplicator = CopyDeduplication::new()?;
+    Ok((event_queue, qh))
+}
 
-    info!("Starting event loop.");
-    loop {
-        if let Some(e) = app.inner.error {
-            return Err(e);
-        }
-        event_queue.flush().map_err(DispatchError::from)?;
+enum WaylandOutcome {
+    Recoverable,
+    Fatal(CliError),
+}
 
-        trace!("Waiting for event.");
-        let mut epoll_events = [MaybeUninit::uninit(); 4];
-        let (epoll_events, _) = match epoll::wait(&app.epoll, &mut epoll_events, None) {
-            Err(Errno::INTR) => continue,
-            r => r.map_io_err(|| "Failed to wait for epoll events.")?,
-        };
-        for &mut epoll::Event { flags: _, data } in epoll_events {
-            const OUT_START_IDX: u64 = IN_TRANSFER_BUFFERS as u64;
-            const WAYLAND_IDX: u64 = OUT_START_IDX + OUT_TRANSFER_BUFFERS as u64;
-            const PASTE_SERVER_IDX: u64 = WAYLAND_IDX + 1;
-            match data.u64() {
-                idx @ ..OUT_START_IDX => app.inner.pending_offers.continue_transfer(
-                    &mut app.inner.tmp_file_unsupported,
-                    &server,
-                    &app.epoll,
-                    &mut deduplicator,
-                    usize::try_from(idx).unwrap(),
-                )?,
-                idx @ OUT_START_IDX..WAYLAND_IDX => app
-                    .inner
-                    .outgoing_transfers
-                    .continue_transfer(usize::try_from(idx).unwrap() - OUT_TRANSFER_BUFFERS)?,
-                WAYLAND_IDX => {
-                    trace!("Wayland event received.");
-                    let count = match event_queue.prepare_read().unwrap().read() {
-                        Err(WaylandError::Io(e)) if e.kind() == WouldBlock => continue,
-                        r => r.map_err(DispatchError::from)?,
-                    };
-                    trace!("Prepared {count} events.");
-                    event_queue.dispatch_pending(&mut app)?;
-                    trace!("Dispatched {count} events.");
-                }
-                PASTE_SERVER_IDX => handle_paste_event(
-                    &paste_socket,
-                    &mut ancillary_buf,
-                    &qh,
-                    app.inner.manager.as_ref(),
-                    app.inner.virtual_keyboard_manager.as_ref(),
-                    &mut app.inner.seats,
-                    auto_paste,
-                    &mut app.inner.pending_paste,
-                    &mut app.inner.sources,
-                    &server,
-                    &mut deduplicator,
-                )?,
-                _ => unreachable!(),
-            }
+/// Distinguishes connection-level hiccups worth retrying (compositor not up
+/// yet, or the socket dying underneath us) from everything else, which is
+/// either a bug (protocol errors) or unrelated to Wayland connectivity and
+/// should surface as a hard failure like before.
+fn classify_wayland_error(e: CliError) -> WaylandOutcome {
+    match &e {
+        CliError::WaylandConnection(ConnectError::NoCompositor)
+        | CliError::WaylandDispatch(DispatchError::Backend(WaylandError::Io(_))) => {
+            WaylandOutcome::Recoverable
         }
+        _ => WaylandOutcome::Fatal(e),
     }
 }
 
@@ -1046,9 +1139,9 @@ impl OutgoingTransfers {
             epoll::EventData::new_u64(u64::try_from(IN_TRANSFER_BUFFERS + idx).unwrap()),
             epoll::EventFlags::OUT,
         )
-        .map_io_err(|| {
-            "Failed to register epoll interest in write end of outgoing transfer pipe."
-        })?;
+        .map_io_err(
+            || "Failed to register epoll interest in write end of outgoing transfer pipe.",
+        )?;
         transfers[idx] = Some(OutgoingTransfer {
             data: data.convert_rc(),
             write,
@@ -1314,11 +1407,14 @@ impl Dispatch<ExtDataControlSourceV1, usize> for App {
                 }
             }
             Event::Cancelled => {
-                debug!("Releasing ownership of {} selection.", match id {
-                    0 => "primary",
-                    1 => "clipboard",
-                    _ => unreachable!(),
-                });
+                debug!(
+                    "Releasing ownership of {} selection.",
+                    match id {
+                        0 => "primary",
+                        1 => "clipboard",
+                        _ => unreachable!(),
+                    }
+                );
                 open[id].take();
                 if open.iter().all(Option::is_none) {
                     data.take();
