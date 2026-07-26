@@ -329,7 +329,7 @@ fn entry_card<'a>(
     let number_label: Option<Element<Message>> = if app.state.ui.ctrl_held && index < 10 {
         Some(
             container(
-                text(format!("{}", index))
+                text(format!("{index}"))
                     .size(14)
                     .font(app.state.theme.mono_font())
                     .color(
