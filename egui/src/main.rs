@@ -99,9 +99,9 @@ fn main() -> Result<(), eframe::Error> {
                             let response_sender = response_sender.clone();
                             thread::spawn(move || {
                                 let run = || {
-                                    let priority = getpriority_process(None).map_io_err(
-                                        || "Failed to get image loading thread priority",
-                                    )?;
+                                    let priority = getpriority_process(None).map_io_err(|| {
+                                        "Failed to get image loading thread priority"
+                                    })?;
                                     let priority = priority + 1;
                                     setpriority_process(None, priority).map_io_err(|| {
                                         format!(
@@ -655,22 +655,19 @@ fn main_ui(
     if let Some(&id) = ui
         .input_mut(|input| {
             (0..10).find(|i| {
-                input.consume_key(
-                    Modifiers::CTRL,
-                    match i {
-                        0 => Key::Num0,
-                        1 => Key::Num1,
-                        2 => Key::Num2,
-                        3 => Key::Num3,
-                        4 => Key::Num4,
-                        5 => Key::Num5,
-                        6 => Key::Num6,
-                        7 => Key::Num7,
-                        8 => Key::Num8,
-                        9 => Key::Num9,
-                        _ => unreachable!(),
-                    },
-                )
+                input.consume_key(Modifiers::CTRL, match i {
+                    0 => Key::Num0,
+                    1 => Key::Num1,
+                    2 => Key::Num2,
+                    3 => Key::Num3,
+                    4 => Key::Num4,
+                    5 => Key::Num5,
+                    6 => Key::Num6,
+                    7 => Key::Num7,
+                    8 => Key::Num8,
+                    9 => Key::Num9,
+                    _ => unreachable!(),
+                })
             })
         })
         .and_then(|idx| fast_paste_buffer.get(idx))
@@ -1155,42 +1152,33 @@ mod system_fonts {
 
     pub fn add_system_fonts(fonts: &mut FontDefinitions) {
         const SYSTEM_FONTS: &[(&str, &[&str])] = &[
-            (
-                "japanese",
-                &[
-                    "Noto Sans JP",
-                    "Noto Sans CJK JP",
-                    "Source Han Sans JP",
-                    "MS Gothic",
-                ],
-            ),
+            ("japanese", &[
+                "Noto Sans JP",
+                "Noto Sans CJK JP",
+                "Source Han Sans JP",
+                "MS Gothic",
+            ]),
             ("korean", &["Source Han Sans KR"]),
             ("taiwanese", &["Source Han Sans TW"]),
-            (
-                "simplified_chinese",
-                &[
-                    "Heiti SC",
-                    "Songti SC",
-                    "Noto Sans CJK SC",
-                    "Noto Sans SC",
-                    "WenQuanYi Zen Hei",
-                    "SimSun",
-                    "Noto Sans SC",
-                    "PingFang SC",
-                    "Source Han Sans CN",
-                ],
-            ),
+            ("simplified_chinese", &[
+                "Heiti SC",
+                "Songti SC",
+                "Noto Sans CJK SC",
+                "Noto Sans SC",
+                "WenQuanYi Zen Hei",
+                "SimSun",
+                "Noto Sans SC",
+                "PingFang SC",
+                "Source Han Sans CN",
+            ]),
             ("traditional_chinese", &["Source Han Sans HK"]),
-            (
-                "arabic_fonts",
-                &[
-                    "Noto Sans Arabic",
-                    "Amiri",
-                    "Lateef",
-                    "Al Tarikh",
-                    "Segoe UI",
-                ],
-            ),
+            ("arabic_fonts", &[
+                "Noto Sans Arabic",
+                "Amiri",
+                "Lateef",
+                "Al Tarikh",
+                "Segoe UI",
+            ]),
         ];
 
         let system_source = SystemSource::new();

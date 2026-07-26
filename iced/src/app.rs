@@ -505,7 +505,6 @@ impl RingboardApp {
     fn handle_window_event(&mut self, id: window::Id, event: &window::Event) -> Task<Message> {
         self.window_id.get_or_insert(id);
         match event {
-            window::Event::Focused => Task::none(),
             // `window::gain_focus` is a no-op under Wayland (winit has no
             // xdg_activation-token plumbing for it), so a `toggle` invocation
             // can only reliably bring the window back via the minimize ->
@@ -844,30 +843,27 @@ impl RingboardApp {
 
     fn handle_key_event(&mut self, event: keyboard::Event) -> Task<Message> {
         match event {
-            keyboard::Event::ModifiersChanged(modifiers) => {
-                self.state.ui.ctrl_held = modifiers.control();
-                Task::none()
-            }
-            keyboard::Event::KeyReleased { modifiers, .. } => {
+            keyboard::Event::ModifiersChanged(modifiers)
+            | keyboard::Event::KeyReleased { modifiers, .. } => {
                 self.state.ui.ctrl_held = modifiers.control();
                 Task::none()
             }
             keyboard::Event::KeyPressed { key, modifiers, .. } => {
-                self.handle_key_pressed(key, modifiers)
+                self.handle_key_pressed(&key, modifiers)
             }
         }
     }
 
     fn handle_key_pressed(
         &mut self,
-        key: keyboard::Key,
+        key: &keyboard::Key,
         modifiers: keyboard::Modifiers,
     ) -> Task<Message> {
         let current_id = self.current_highlight_id();
         let mut new_id = current_id;
         let mut set_pinned_expanded: Option<bool> = None;
 
-        match &key {
+        match key {
             key::Key::Named(key::Named::Enter) => {
                 if self.state.ui.input_active {
                     return Task::none();
@@ -921,7 +917,7 @@ impl RingboardApp {
                 let nav = self.nav_entries();
                 let show_sections = self.show_sections();
                 new_id = Self::next_id(&nav, current_id);
-                if show_sections && !self.state.ui.pinned_expanded && !new_id.is_none() {
+                if show_sections && !self.state.ui.pinned_expanded && new_id.is_some() {
                     let (pinned, _unpinned) = self.partitioned_entries();
                     if new_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id)) {
                         set_pinned_expanded = Some(true);
@@ -944,7 +940,7 @@ impl RingboardApp {
                 let nav = self.nav_entries();
                 let show_sections = self.show_sections();
                 new_id = Self::prev_id(&nav, current_id);
-                if show_sections && !self.state.ui.pinned_expanded && !new_id.is_none() {
+                if show_sections && !self.state.ui.pinned_expanded && new_id.is_some() {
                     let (pinned, _unpinned) = self.partitioned_entries();
                     if new_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id)) {
                         set_pinned_expanded = Some(true);
@@ -1170,13 +1166,10 @@ impl RingboardApp {
             (before / total).clamp(0.0, 1.0)
         };
 
-        operation::snap_to(
-            crate::widgets::entry_list_id(),
-            operation::RelativeOffset {
-                x: 0.0,
-                y: fraction,
-            },
-        )
+        operation::snap_to(crate::widgets::entry_list_id(), operation::RelativeOffset {
+            x: 0.0,
+            y: fraction,
+        })
     }
 
     fn request_images(&mut self, entries: &[UiEntry]) {
