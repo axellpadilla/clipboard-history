@@ -210,12 +210,10 @@ impl RingboardApp {
             window_id: None,
         };
 
-        let focus_search = operation::focus(crate::widgets::search_input_id());
         let controller_stream = Task::stream(controller_messages(response_receiver));
         // Populates `window_id` as early as possible, ahead of the first
         // `window::Event` — needed for hide/show/focus.
         let mut tasks = vec![
-            focus_search,
             controller_stream,
             window::latest().map(Message::WindowIdResolved),
         ];
@@ -254,7 +252,10 @@ impl RingboardApp {
                 self.state.ui.pinned_expanded = !self.state.ui.pinned_expanded;
                 Task::none()
             }
-            Message::EntryClicked(id) | Message::FastPaste(id) => self.paste(id),
+            Message::EntryClicked(id) | Message::FavPaste(id) => {
+                self.state.ui.input_active = false;
+                self.paste(id)
+            }
             Message::FavoriteToggled(id) => self.toggle_favorite(id),
             Message::DeleteEntry(id) => self.delete(id),
             Message::DetailRequested(id) => self.open_detail(id),
@@ -266,6 +267,12 @@ impl RingboardApp {
                 self.state.ui.detailed_entry = None;
                 Task::none()
             }
+            Message::SearchInputFocusRequested => {
+                self.state.ui.input_active = true;
+                operation::focus(crate::widgets::search_input_id())
+            }
+            Message::MoveFavoriteUp(id) => self.move_favorite_up(id),
+            Message::MoveFavoriteDown(id) => self.move_favorite_down(id),
 
             Message::Refresh => self.refresh(),
             Message::DismissError => {
@@ -422,6 +429,38 @@ impl RingboardApp {
         Task::none()
     }
 
+    fn paste_text(&mut self, id: u64) -> Task<Message> {
+        self.state.ui.pending_search_token.take();
+        let _ = self.requests.send(Command::PasteText(id));
+        Task::none()
+    }
+
+    fn move_favorite_up(&mut self, id: u64) -> Task<Message> {
+        let (pinned, _) = self.partitioned_entries();
+        if let Some(pos) = pinned.iter().position(|e| e.entry.id() == id)
+            && pos > 0
+        {
+            let prev_id = pinned[pos - 1].entry.id();
+            let _ = self.requests.send(Command::Swap(id, prev_id));
+            self.state.ui.highlighted_id = Some(id);
+            return self.refresh_entries();
+        }
+        Task::none()
+    }
+
+    fn move_favorite_down(&mut self, id: u64) -> Task<Message> {
+        let (pinned, _) = self.partitioned_entries();
+        if let Some(pos) = pinned.iter().position(|e| e.entry.id() == id)
+            && pos + 1 < pinned.len()
+        {
+            let next_id = pinned[pos + 1].entry.id();
+            let _ = self.requests.send(Command::Swap(id, next_id));
+            self.state.ui.highlighted_id = Some(id);
+            return self.refresh_entries();
+        }
+        Task::none()
+    }
+
     fn toggle_favorite(&mut self, id: u64) -> Task<Message> {
         let cmd = {
             let entry = self.find_entry(id);
@@ -466,7 +505,7 @@ impl RingboardApp {
     fn handle_window_event(&mut self, id: window::Id, event: &window::Event) -> Task<Message> {
         self.window_id.get_or_insert(id);
         match event {
-            window::Event::Focused => operation::focus(crate::widgets::search_input_id()),
+            window::Event::Focused => Task::none(),
             // `window::gain_focus` is a no-op under Wayland (winit has no
             // xdg_activation-token plumbing for it), so a `toggle` invocation
             // can only reliably bring the window back via the minimize ->
@@ -522,7 +561,6 @@ impl RingboardApp {
         Task::batch([
             window::minimize(id, false),
             window::gain_focus(id),
-            operation::focus(crate::widgets::search_input_id()),
             self.refresh_entries(),
         ])
     }
@@ -791,6 +829,7 @@ impl RingboardApp {
             }
             ControllerMessage::LoadedImage { .. } => Task::none(),
             ControllerMessage::Pasted => self.close_or_hide(),
+            ControllerMessage::Swapped => self.refresh_entries(),
             ControllerMessage::GarbageCollected { bytes_freed } => {
                 self.state.settings.running_gc = false;
                 self.state.settings.status = Some(Ok(format!("Freed {bytes_freed} bytes.")));
@@ -804,42 +843,129 @@ impl RingboardApp {
     // ------------------------------------------------------------------
 
     fn handle_key_event(&mut self, event: keyboard::Event) -> Task<Message> {
-        let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-            return Task::none();
-        };
+        match event {
+            keyboard::Event::ModifiersChanged(modifiers) => {
+                self.state.ui.ctrl_held = modifiers.control();
+                Task::none()
+            }
+            keyboard::Event::KeyReleased { modifiers, .. } => {
+                self.state.ui.ctrl_held = modifiers.control();
+                Task::none()
+            }
+            keyboard::Event::KeyPressed { key, modifiers, .. } => {
+                self.handle_key_pressed(key, modifiers)
+            }
+        }
+    }
 
-        let show_sections = self.show_sections();
-        let nav = self.nav_entries();
-        let (pinned, unpinned) = if show_sections {
-            self.partitioned_entries()
-        } else {
-            (Vec::new(), Vec::new())
-        };
-
+    fn handle_key_pressed(
+        &mut self,
+        key: keyboard::Key,
+        modifiers: keyboard::Modifiers,
+    ) -> Task<Message> {
         let current_id = self.current_highlight_id();
         let mut new_id = current_id;
         let mut set_pinned_expanded: Option<bool> = None;
 
         match &key {
-            key::Key::Named(key::Named::ArrowUp) if !modifiers.control() => {
-                new_id = Self::prev_id(&nav, current_id);
-                if show_sections
-                    && !self.state.ui.pinned_expanded
-                    && new_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id))
-                {
-                    set_pinned_expanded = Some(true);
+            key::Key::Named(key::Named::Enter) => {
+                if self.state.ui.input_active {
+                    return Task::none();
                 }
+                if let Some(id) = current_id {
+                    return self.paste(id);
+                }
+                return Task::none();
+            }
+            key::Key::Named(key::Named::Escape) => {
+                if self.state.ui.input_active {
+                    self.state.ui.input_active = false;
+                    self.state.ui.query = String::new();
+                    self.state.entries.search_results = Box::default();
+                    self.state.ui.highlighted_id = self.nav_entries().first().map(|e| e.entry.id());
+                    self.state.ui.search_highlighted_id = None;
+                    self.state.ui.last_error = None;
+                    self.state.ui.pending_search_token = None;
+                    return Task::none();
+                }
+                if self.state.ui.details_requested.is_some() {
+                    return Task::done(Message::DetailClosed);
+                }
+                if !self.state.ui.query.is_empty() {
+                    self.state.ui.query = String::new();
+                    self.state.entries.search_results = Box::default();
+                    self.state.ui.highlighted_id = None;
+                    self.state.ui.search_highlighted_id = None;
+                    self.state.ui.last_error = None;
+                    self.state.ui.pending_search_token = None;
+                    return Task::none();
+                }
+                return self.close_or_hide();
+            }
+            key::Key::Named(key::Named::ArrowDown) if modifiers.control() && modifiers.shift() => {
+                if let Some(id) = current_id {
+                    return self.move_favorite_down(id);
+                }
+                return Task::none();
+            }
+            key::Key::Named(key::Named::ArrowUp) if modifiers.control() && modifiers.shift() => {
+                if let Some(id) = current_id {
+                    return self.move_favorite_up(id);
+                }
+                return Task::none();
             }
             key::Key::Named(key::Named::ArrowDown) if !modifiers.control() => {
+                if self.state.ui.input_active {
+                    self.state.ui.input_active = false;
+                }
+                let nav = self.nav_entries();
+                let show_sections = self.show_sections();
                 new_id = Self::next_id(&nav, current_id);
-                if show_sections
-                    && !self.state.ui.pinned_expanded
-                    && new_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id))
-                {
-                    set_pinned_expanded = Some(true);
+                if show_sections && !self.state.ui.pinned_expanded && !new_id.is_none() {
+                    let (pinned, _unpinned) = self.partitioned_entries();
+                    if new_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id)) {
+                        set_pinned_expanded = Some(true);
+                    }
+                }
+                // If wrapped from last entry back to first, focus the search bar instead
+                if !modifiers.control() && self.state.ui.query.is_empty() {
+                    let nav = self.nav_entries();
+                    if current_id.is_some()
+                        && new_id.is_some()
+                        && new_id == nav.first().map(|e| e.entry.id())
+                        && current_id != nav.first().map(|e| e.entry.id())
+                    {
+                        self.state.ui.input_active = true;
+                        return operation::focus(crate::widgets::search_input_id());
+                    }
+                }
+            }
+            key::Key::Named(key::Named::ArrowUp) if !modifiers.control() => {
+                let nav = self.nav_entries();
+                let show_sections = self.show_sections();
+                new_id = Self::prev_id(&nav, current_id);
+                if show_sections && !self.state.ui.pinned_expanded && !new_id.is_none() {
+                    let (pinned, _unpinned) = self.partitioned_entries();
+                    if new_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id)) {
+                        set_pinned_expanded = Some(true);
+                    }
+                }
+                // If at the first entry, focus the search input instead
+                if !modifiers.control() && self.state.ui.query.is_empty() {
+                    let nav = self.nav_entries();
+                    if current_id.is_some() && nav.first().map(|e| e.entry.id()) == current_id {
+                        self.state.ui.input_active = true;
+                        return operation::focus(crate::widgets::search_input_id());
+                    }
                 }
             }
             key::Key::Named(key::Named::ArrowLeft) => {
+                let show_sections = self.show_sections();
+                let (pinned, unpinned) = if show_sections {
+                    self.partitioned_entries()
+                } else {
+                    (Vec::new(), Vec::new())
+                };
                 let on_pinned_entry =
                     current_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id));
                 if show_sections && !pinned.is_empty() && on_pinned_entry {
@@ -856,6 +982,12 @@ impl RingboardApp {
                 }
             }
             key::Key::Named(key::Named::ArrowRight) => {
+                let show_sections = self.show_sections();
+                let (pinned, _unpinned) = if show_sections {
+                    self.partitioned_entries()
+                } else {
+                    (Vec::new(), Vec::new())
+                };
                 let on_collapsed_pinned_entry = !self.state.ui.pinned_expanded
                     && current_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id));
                 if show_sections && !pinned.is_empty() && on_collapsed_pinned_entry {
@@ -868,27 +1000,6 @@ impl RingboardApp {
                     return Task::done(Message::DetailRequested(id));
                 }
             }
-            key::Key::Named(key::Named::Enter) => {
-                if let Some(id) = current_id {
-                    return self.paste(id);
-                }
-                return Task::none();
-            }
-            key::Key::Named(key::Named::Escape) => {
-                if self.state.ui.details_requested.is_some() {
-                    return Task::done(Message::DetailClosed);
-                }
-                if !self.state.ui.query.is_empty() {
-                    self.state.ui.query = String::new();
-                    self.state.entries.search_results = Box::default();
-                    self.state.ui.highlighted_id = None;
-                    self.state.ui.search_highlighted_id = None;
-                    self.state.ui.last_error = None;
-                    self.state.ui.pending_search_token = None;
-                    return Task::none();
-                }
-                return self.close_or_hide();
-            }
             key::Key::Named(key::Named::Tab) if modifiers.control() => {
                 return if modifiers.shift() {
                     Task::done(Message::TabPrev)
@@ -899,8 +1010,25 @@ impl RingboardApp {
             key::Key::Character(c) => {
                 let s = c.as_str();
 
-                // Regular typing is intentionally left to the search text input
-                // (launcher-style UI). Only handle modifier combinations here.
+                // Ctrl+V paste focused entry (only when input is NOT active)
+                if modifiers.control()
+                    && !modifiers.shift()
+                    && s.eq_ignore_ascii_case("v")
+                    && !self.state.ui.input_active
+                    && let Some(id) = self.current_highlight_id()
+                {
+                    return self.paste(id);
+                }
+                // Ctrl+Shift+V text-mode paste focused entry (only when input is NOT active)
+                if modifiers.control()
+                    && modifiers.shift()
+                    && s.eq_ignore_ascii_case("v")
+                    && !self.state.ui.input_active
+                    && let Some(id) = self.current_highlight_id()
+                {
+                    return self.paste_text(id);
+                }
+
                 if modifiers.control() {
                     if s.eq_ignore_ascii_case("r") {
                         return Task::done(Message::Refresh);
@@ -910,8 +1038,18 @@ impl RingboardApp {
                     }
                     if let Some(digit) = s.chars().next().and_then(|c| c.to_digit(10)) {
                         let idx = digit as usize;
-                        if let Some(entry) = nav.get(idx) {
-                            return self.paste(entry.entry.id());
+                        if modifiers.shift() {
+                            // Ctrl+Shift+digit: paste favorite
+                            let (pinned, _) = self.partitioned_entries();
+                            if let Some(entry) = pinned.get(idx) {
+                                return self.paste(entry.entry.id());
+                            }
+                        } else {
+                            // Ctrl+digit: paste recent (nav order)
+                            let nav = self.nav_entries();
+                            if let Some(entry) = nav.get(idx) {
+                                return self.paste(entry.entry.id());
+                            }
                         }
                     }
                     return Task::none();
@@ -932,9 +1070,26 @@ impl RingboardApp {
                     return Task::none();
                 }
 
+                // Typing a character when input is inactive: activate search and focus it
+                if !modifiers.control() && !modifiers.alt() && !self.state.ui.input_active {
+                    self.state.ui.input_active = true;
+                    self.state.ui.query.push_str(s);
+                    // Trigger search for the new query
+                    let task = self.send_search();
+                    return Task::batch([
+                        task,
+                        operation::focus(crate::widgets::search_input_id()),
+                    ]);
+                }
+
                 return Task::none();
             }
             _ => return Task::none(),
+        }
+
+        // Deactivate search input when navigating to an entry
+        if new_id.is_some() && new_id != current_id {
+            self.state.ui.input_active = false;
         }
 
         // Apply navigation changes.
@@ -1015,10 +1170,13 @@ impl RingboardApp {
             (before / total).clamp(0.0, 1.0)
         };
 
-        operation::snap_to(crate::widgets::entry_list_id(), operation::RelativeOffset {
-            x: 0.0,
-            y: fraction,
-        })
+        operation::snap_to(
+            crate::widgets::entry_list_id(),
+            operation::RelativeOffset {
+                x: 0.0,
+                y: fraction,
+            },
+        )
     }
 
     fn request_images(&mut self, entries: &[UiEntry]) {

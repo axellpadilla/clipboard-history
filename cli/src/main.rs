@@ -979,7 +979,7 @@ fn add(
             connect_to_paste_server(&addr)?
         };
 
-        send_paste_buffer(paste_server, entry, &mut reader, false)?;
+        send_paste_buffer(paste_server, entry, &mut reader, false, None)?;
     }
 
     Ok(())
@@ -1225,12 +1225,16 @@ fn migrate_from_gch(server: OwnedFd, database: Option<PathBuf>) -> Result<(), Cl
                     drain_add_requests(&server, Some(&mut translation), &mut pending_adds)?;
                 }
                 let gch_id = gch_id!();
-                match MoveToFrontRequest::response(&server, translation[gch_id], match op {
-                    OP_TYPE_FAVORITE_ITEM => Some(RingKind::Favorites),
-                    OP_TYPE_UNFAVORITE_ITEM => Some(RingKind::Main),
-                    OP_TYPE_MOVE_ITEM_TO_END => None,
-                    _ => unreachable!(),
-                })? {
+                match MoveToFrontRequest::response(
+                    &server,
+                    translation[gch_id],
+                    match op {
+                        OP_TYPE_FAVORITE_ITEM => Some(RingKind::Favorites),
+                        OP_TYPE_UNFAVORITE_ITEM => Some(RingKind::Main),
+                        OP_TYPE_MOVE_ITEM_TO_END => None,
+                        _ => unreachable!(),
+                    },
+                )? {
                     MoveToFrontResponse::Success { id } => {
                         translation[gch_id] = id;
                     }
@@ -1822,10 +1826,13 @@ fn migrate_from_ringboard_export(server: OwnedFd, dump_file: PathBuf) -> Result<
                            mime_type,
                        }|
      -> Result<(), CliError> {
-        let data = generate_entry_file(&mut cache, match &data {
-            ExportData::Human(str) => str.as_bytes(),
-            ExportData::Bytes(bytes) => bytes,
-        })?;
+        let data = generate_entry_file(
+            &mut cache,
+            match &data {
+                ExportData::Human(str) => str.as_bytes(),
+                ExportData::Bytes(bytes) => bytes,
+            },
+        )?;
 
         let (to, _) = decompose_id(id).unwrap_or_default();
         unsafe { pipeline_add_request(&server, data, to, &mime_type, None, &mut pending_adds) }

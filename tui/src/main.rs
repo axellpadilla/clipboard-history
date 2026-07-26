@@ -417,6 +417,7 @@ fn handle_message(
         Message::LoadedImage { .. } => unreachable!(),
         Message::Pasted => return Ok(true),
         Message::GarbageCollected { .. } => {}
+        Message::Swapped => {}
     }
     if ui.details_requested.is_some() {
         maybe_get_details(entries, ui, requests);

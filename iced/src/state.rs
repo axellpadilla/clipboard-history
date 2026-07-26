@@ -60,6 +60,8 @@ pub struct UiState {
     pub active_tab: ActiveTab,
     pub pinned_expanded: bool,
     pub hovered_id: Option<u64>,
+    pub input_active: bool,
+    pub ctrl_held: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]

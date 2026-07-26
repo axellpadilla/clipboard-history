@@ -58,8 +58,8 @@ pub enum Message {
     DetailClosed,
     /// Refresh entries and clear caches.
     Refresh,
-    /// Paste the entry at the given navigation index.
-    FastPaste(u64),
+    /// Paste the entry at the given favorites index.
+    FavPaste(u64),
     /// Dismiss the transient error banner.
     DismissError,
     /// Pointer entered or left an entry row.
@@ -78,4 +78,10 @@ pub enum Message {
     SettingsGcBytesChanged(String),
     /// The user asked to run garbage collection now.
     SettingsGcRequested,
+    /// User clicked the search input area to activate it.
+    SearchInputFocusRequested,
+    /// Move a favorite entry up (earlier) in the favorites list.
+    MoveFavoriteUp(u64),
+    /// Move a favorite entry down (later) in the favorites list.
+    MoveFavoriteDown(u64),
 }
