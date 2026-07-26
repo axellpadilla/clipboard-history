@@ -1139,9 +1139,9 @@ impl OutgoingTransfers {
             epoll::EventData::new_u64(u64::try_from(IN_TRANSFER_BUFFERS + idx).unwrap()),
             epoll::EventFlags::OUT,
         )
-        .map_io_err(|| {
-            "Failed to register epoll interest in write end of outgoing transfer pipe."
-        })?;
+        .map_io_err(
+            || "Failed to register epoll interest in write end of outgoing transfer pipe.",
+        )?;
         transfers[idx] = Some(OutgoingTransfer {
             data: data.convert_rc(),
             write,
@@ -1407,11 +1407,14 @@ impl Dispatch<ExtDataControlSourceV1, usize> for App {
                 }
             }
             Event::Cancelled => {
-                debug!("Releasing ownership of {} selection.", match id {
-                    0 => "primary",
-                    1 => "clipboard",
-                    _ => unreachable!(),
-                });
+                debug!(
+                    "Releasing ownership of {} selection.",
+                    match id {
+                        0 => "primary",
+                        1 => "clipboard",
+                        _ => unreachable!(),
+                    }
+                );
                 open[id].take();
                 if open.iter().all(Option::is_none) {
                     data.take();

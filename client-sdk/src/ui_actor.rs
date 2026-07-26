@@ -22,15 +22,15 @@ use thiserror::Error;
 use crate::{
     ClientError, DatabaseReader, Entry, EntryReader, Kind,
     api::{
-        GarbageCollectRequest, MoveToFrontRequest, RemoveRequest, connect_to_paste_server,
-        connect_to_server, send_paste_buffer,
+        GarbageCollectRequest, MoveToFrontRequest, RemoveRequest, SwapRequest,
+        connect_to_paste_server, connect_to_server, send_paste_buffer,
     },
     core::{
         BucketAndIndex, Error as CoreError, IoErr, RingAndIndex,
         dirs::{data_dir, socket_file},
         protocol::{
-            GarbageCollectResponse, IdNotFoundError, MoveToFrontResponse, RemoveResponse, RingKind,
-            composite_id,
+            GarbageCollectResponse, IdNotFoundError, MimeType, MoveToFrontResponse, RemoveResponse,
+            RingKind, SwapResponse, composite_id,
         },
         ring::{MAX_ENTRIES, Ring},
         size_to_bucket,
@@ -99,6 +99,8 @@ pub enum Command {
     },
     LoadImage(u64),
     Paste(u64),
+    PasteText(u64),
+    Swap(u64, u64),
     GarbageCollect {
         max_wasted_bytes: u64,
     },
@@ -132,6 +134,7 @@ pub enum Message {
         image: File,
     },
     Pasted,
+    Swapped,
     GarbageCollected {
         bytes_freed: u64,
     },
@@ -424,10 +427,36 @@ fn handle_command<E>(
                     entry,
                     reader,
                     true,
+                    None,
                 )
             }
             .inspect_err(|_| *paste_server = None)?;
             Ok(Some(Message::Pasted))
+        }
+        Command::PasteText(id) => {
+            let entry = unsafe { database.get(id)? };
+            {
+                send_paste_buffer(
+                    maybe_init_server(paste_socket_file, connect_to_paste_server, paste_server)?,
+                    entry,
+                    reader,
+                    true,
+                    Some(MimeType::from("text/plain").unwrap_or_default()),
+                )
+            }
+            .inspect_err(|_| *paste_server = None)?;
+            Ok(Some(Message::Pasted))
+        }
+        Command::Swap(id1, id2) => {
+            let SwapResponse { error1, error2 } = SwapRequest::response(
+                maybe_init_server(socket_file, connect_to_server, server)?,
+                id1,
+                id2,
+            )?;
+            if let Some(e) = error1.or(error2) {
+                return Err(e.into());
+            }
+            Ok(Some(Message::Swapped))
         }
     }
 }

@@ -598,9 +598,13 @@ fn handle_x11_event(
                         requestor,
                         &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
                     )?;
-                    conn.change_property32(PropMode::REPLACE, requestor, property, incr_atom, &[
-                        u32::try_from(data.len()).unwrap_or(u32::MAX),
-                    ])?;
+                    conn.change_property32(
+                        PropMode::REPLACE,
+                        requestor,
+                        property,
+                        incr_atom,
+                        &[u32::try_from(data.len()).unwrap_or(u32::MAX)],
+                    )?;
 
                     if mem::replace(
                         &mut paste_allocations[usize::from(*paste_alloc_next)],

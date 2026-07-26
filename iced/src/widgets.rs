@@ -58,7 +58,7 @@ pub fn main_view(app: &RingboardApp) -> Element<'_, Message> {
     col = col.push(content);
 
     if !is_settings && show_sections && has_entries {
-        col = col.push(fast_paste_bar(app));
+        col = col.push(fav_paste_bar(app));
     }
 
     col = col.push(status_bar(app));
@@ -78,6 +78,10 @@ pub const fn search_input_id() -> iced::widget::Id {
     iced::widget::Id::new("search-input")
 }
 
+pub const fn search_input_inactive_id() -> iced::widget::Id {
+    iced::widget::Id::new("search-input-inactive")
+}
+
 fn search_bar(app: &RingboardApp) -> Element<'_, Message> {
     let hint = match app.state.ui.search_kind {
         ringboard_sdk::ui_actor::SearchKind::Plain => "Search clipboard history...",
@@ -92,12 +96,30 @@ fn search_bar(app: &RingboardApp) -> Element<'_, Message> {
     let radius = app.state.theme.border_radius();
     let mono = app.state.theme.mono_font();
 
-    let input = text_input(hint, &app.state.ui.query)
-        .id(search_input_id())
-        .on_input(Message::SearchChanged)
-        .width(Length::Fill)
-        .size(app.state.theme.font_size())
-        .font(mono);
+    let input: Element<'_, Message> = if app.state.ui.input_active {
+        // Active: use the real focusable ID — keyboard captured by text_input
+        text_input(hint, &app.state.ui.query)
+            .id(search_input_id())
+            .on_input(Message::SearchChanged)
+            .width(Length::Fill)
+            .size(app.state.theme.font_size())
+            .font(mono)
+            .into()
+    } else {
+        // Inactive: different ID so widget starts unfocused —
+        // keyboard goes through keyboard::listen()
+        // Wrap in mouse_area for click-to-activate
+        mouse_area(
+            text_input(hint, &app.state.ui.query)
+                .id(search_input_inactive_id())
+                .on_input(Message::SearchChanged)
+                .width(Length::Fill)
+                .size(app.state.theme.font_size())
+                .font(mono),
+        )
+        .on_press(Message::SearchInputFocusRequested)
+        .into()
+    };
 
     let kind_button = tooltip(
         button(text(kind_label).size(12).font(mono))
@@ -156,6 +178,7 @@ fn tab_bar(app: &RingboardApp) -> Element<'_, Message> {
 
 fn entry_list(app: &RingboardApp, detail_id: Option<u64>) -> Element<'_, Message> {
     let mut col = column![].spacing(4);
+    let mut global_index: usize = 0;
 
     let render_items: Vec<&UiEntry> = if app.show_sections() {
         let (pinned, unpinned) = app.partitioned_entries();
@@ -171,7 +194,8 @@ fn entry_list(app: &RingboardApp, detail_id: Option<u64>) -> Element<'_, Message
 
             if app.state.ui.pinned_expanded {
                 for entry in &pinned {
-                    col = col.push(entry_card(app, entry, detail_id));
+                    col = col.push(entry_card(app, entry, detail_id, global_index));
+                    global_index += 1;
                 }
             }
 
@@ -185,8 +209,9 @@ fn entry_list(app: &RingboardApp, detail_id: Option<u64>) -> Element<'_, Message
         app.filtered_entries()
     };
 
-    for entry in render_items {
-        col = col.push(entry_card(app, entry, detail_id));
+    for entry in &render_items {
+        col = col.push(entry_card(app, entry, detail_id, global_index));
+        global_index += 1;
     }
 
     scrollable(col)
@@ -282,6 +307,7 @@ fn entry_card<'a>(
     app: &'a RingboardApp,
     entry: &'a UiEntry,
     detail_id: Option<u64>,
+    index: usize,
 ) -> Element<'a, Message> {
     let id = entry.entry.id();
     let is_favorite = entry.entry.ring() == RingKind::Favorites;
@@ -300,12 +326,38 @@ fn entry_card<'a>(
         Alignment::Center
     };
 
-    let row_col = column![
-        row![container(preview).width(Length::Fill), actions]
-            .spacing(8)
-            .align_y(content_align),
-    ]
-    .spacing(6);
+    let number_label: Option<Element<Message>> = if app.state.ui.ctrl_held && index < 10 {
+        Some(
+            container(
+                text(format!("{}", index))
+                    .size(14)
+                    .font(app.state.theme.mono_font())
+                    .color(
+                        app.state
+                            .theme
+                            .extended_palette()
+                            .background
+                            .base
+                            .text
+                            .scale_alpha(0.4),
+                    ),
+            )
+            .width(Length::Fixed(20.0))
+            .align_x(Alignment::Center)
+            .into(),
+        )
+    } else {
+        None
+    };
+
+    let mut content_row = row![].spacing(8).align_y(content_align);
+    if let Some(num) = number_label {
+        content_row = content_row.push(num);
+    }
+    content_row = content_row.push(container(preview).width(Length::Fill));
+    content_row = content_row.push(actions);
+
+    let row_col = column![content_row].spacing(6);
 
     let row = container(row_col)
         .style(move |theme: &iced::Theme| row_style(theme, is_highlighted, is_hovered, radius))
@@ -445,10 +497,10 @@ pub fn entry_has_extra_detail(entry: &UiEntry) -> bool {
     }
 }
 
-/// The reserved width of the whole action cluster (favorite star + delete +
-/// detail toggle), so revealing it on hover/selection doesn't shift the
-/// row's layout.
-const ACTIONS_WIDTH: f32 = 110.0;
+/// The reserved width of the whole action cluster (favorite star + reorder +
+/// delete + detail toggle), so revealing it on hover/selection doesn't shift
+/// the row's layout.
+const ACTIONS_WIDTH: f32 = 150.0;
 
 #[allow(clippy::fn_params_excessive_bools)]
 fn action_row(
@@ -494,6 +546,33 @@ fn action_row(
         )
         .into(),
     ];
+
+    if is_favorite {
+        items.insert(
+            0,
+            tooltip(
+                button(text("\u{2191}").size(12))
+                    .on_press(Message::MoveFavoriteUp(id))
+                    .style(icon_button_style)
+                    .padding(6),
+                text("Move up").size(11),
+                tooltip::Position::Top,
+            )
+            .into(),
+        );
+        items.insert(
+            1,
+            tooltip(
+                button(text("\u{2193}").size(12))
+                    .on_press(Message::MoveFavoriteDown(id))
+                    .style(icon_button_style)
+                    .padding(6),
+                text("Move down").size(11),
+                tooltip::Position::Top,
+            )
+            .into(),
+        );
+    }
 
     if has_detail {
         items.push(
@@ -751,12 +830,18 @@ fn error_banner<'a>(
 }
 
 // ------------------------------------------------------------------
-// Fast paste bar
+// Fav paste bar
 // ------------------------------------------------------------------
 
-fn fast_paste_bar(app: &RingboardApp) -> Element<'_, Message> {
-    let nav = app.nav_entries();
-    let chips: Vec<Element<Message>> = nav
+fn fav_paste_bar(app: &RingboardApp) -> Element<'_, Message> {
+    let favorites: Vec<&UiEntry> = app
+        .state
+        .entries
+        .loaded_entries
+        .iter()
+        .filter(|e| e.entry.ring() == RingKind::Favorites)
+        .collect();
+    let chips: Vec<Element<Message>> = favorites
         .iter()
         .take(10)
         .enumerate()
@@ -765,7 +850,7 @@ fn fast_paste_bar(app: &RingboardApp) -> Element<'_, Message> {
             let label = format!("{i}");
             tooltip(
                 button(text(label).size(11).font(app.state.theme.mono_font()))
-                    .on_press(Message::FastPaste(id))
+                    .on_press(Message::FavPaste(id))
                     .style(move |theme, status| {
                         if i == 0 {
                             primary_button_style(theme, status)
@@ -774,7 +859,7 @@ fn fast_paste_bar(app: &RingboardApp) -> Element<'_, Message> {
                         }
                     })
                     .padding(Padding::new(4.0).left(8).right(8)),
-                text(format!("Ctrl+{i} to paste")).size(11),
+                text(format!("Ctrl+Shift+{i} to paste favorite")).size(11),
                 tooltip::Position::Top,
             )
             .into()
@@ -789,7 +874,7 @@ fn fast_paste_bar(app: &RingboardApp) -> Element<'_, Message> {
         hairline(),
         container(
             row![
-                text("Fast paste:").size(11).font(app.state.theme.font()),
+                text("Fav paste:").size(11).font(app.state.theme.font()),
                 row(chips).spacing(4),
             ]
             .spacing(8)
@@ -821,7 +906,11 @@ fn status_bar(app: &RingboardApp) -> Element<'_, Message> {
     };
 
     let shortcuts = "Enter paste  \u{b7}  Esc clear/exit  \u{b7}  Ctrl+D detail  \u{b7}  Ctrl+R \
-                     refresh  \u{b7}  Ctrl+0-9 paste  \u{b7}  Alt+X search kind";
+                     refresh  \u{b7}  Ctrl+0-9 recent  \u{b7}  Ctrl+Shift+0-9 favorite  \u{b7}  Alt+X search kind";
+
+    if !app.state.ui.ctrl_held {
+        return column![hairline()].spacing(6).width(Length::Fill).into();
+    }
 
     column![
         hairline(),

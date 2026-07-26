@@ -112,9 +112,13 @@ pub fn send_paste_buffer(
     entry: Entry,
     reader: &mut EntryReader,
     trigger_paste: bool,
+    mime_override: Option<MimeType>,
 ) -> ringboard_core::Result<()> {
     let file = entry.to_file(reader)?;
-    let mime = file.mime_type()?;
+    let mime = match mime_override {
+        Some(m) => m,
+        None => file.mime_type()?,
+    };
 
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
     let mut ancillary = SendAncillaryBuffer::new(&mut space);
