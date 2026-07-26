@@ -906,7 +906,8 @@ fn status_bar(app: &RingboardApp) -> Element<'_, Message> {
     };
 
     let shortcuts = "Enter paste  \u{b7}  Esc clear/exit  \u{b7}  Ctrl+D detail  \u{b7}  Ctrl+R \
-                     refresh  \u{b7}  Ctrl+0-9 recent  \u{b7}  Ctrl+Shift+0-9 favorite  \u{b7}  Alt+X search kind";
+                     refresh  \u{b7}  Ctrl+0-9 recent  \u{b7}  Ctrl+Shift+0-9 favorite  \u{b7}  \
+                     Alt+X search kind";
 
     if !app.state.ui.ctrl_held {
         return column![hairline()].spacing(6).width(Length::Fill).into();
