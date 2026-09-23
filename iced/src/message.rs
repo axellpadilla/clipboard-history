@@ -84,4 +84,6 @@ pub enum Message {
     MoveFavoriteUp(u64),
     /// Move a favorite entry down (later) in the favorites list.
     MoveFavoriteDown(u64),
+    /// Show or hide the shortcut list.
+    HelpToggled,
 }
