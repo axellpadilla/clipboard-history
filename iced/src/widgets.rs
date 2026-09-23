@@ -368,7 +368,7 @@ fn entry_card<'a>(
         Alignment::Center
     };
 
-    let number_label: Option<Element<Message>> = if app.state.ui.ctrl_held && index < 10 {
+    let number_label: Option<Element<Message>> = if app.state.ui.modifiers.control() && index < 10 {
         Some(
             container(
                 text(format!("{index}"))
@@ -957,7 +957,7 @@ fn status_bar(app: &RingboardApp) -> Element<'_, Message> {
     let shortcuts = "Enter paste  \u{b7}  Esc clear/exit  \u{b7}  Ctrl+D detail  \u{b7}  Ctrl+0-9 \
                      recent  \u{b7}  ? all shortcuts";
 
-    if !app.state.ui.ctrl_held {
+    if !app.state.ui.modifiers.control() {
         return column![hairline()].spacing(6).width(Length::Fill).into();
     }
 

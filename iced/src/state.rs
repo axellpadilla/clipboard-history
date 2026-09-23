@@ -61,10 +61,24 @@ pub struct UiState {
     pub pinned_expanded: bool,
     pub hovered_id: Option<u64>,
     pub input_active: bool,
-    pub ctrl_held: bool,
+    /// Live modifier state, so a paste shortcut can wait for its own keys to
+    /// come up before the watcher injects the chord.
+    pub modifiers: iced::keyboard::Modifiers,
+    /// A paste asked for while modifiers were still held, sent once they are
+    /// released.
+    pub deferred_paste: Option<DeferredPaste>,
     /// Whether the `?` shortcut list is showing, which takes over the window
     /// until it is dismissed.
     pub show_help: bool,
+}
+
+/// A paste held back until the keys that triggered it are released. The watcher
+/// injects a paste chord, and modifiers still held turn that chord into a
+/// different one the target may not bind.
+#[derive(Copy, Clone, Debug)]
+pub struct DeferredPaste {
+    pub id: u64,
+    pub as_text: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
