@@ -4,6 +4,7 @@ use iced::application;
 
 mod app;
 mod message;
+mod shortcuts;
 mod startup;
 mod state;
 mod theme;

@@ -9,12 +9,13 @@ use iced::{
 };
 use ringboard_sdk::{
     core::protocol::RingKind,
-    ui_actor::{DetailedEntry, UiEntry, UiEntryCache},
+    ui_actor::{DetailedEntry, SearchKind, UiEntry, UiEntryCache},
 };
 
 use crate::{
     app::RingboardApp,
     message::Message,
+    shortcuts,
     state::ActiveTab,
     theme::{
         danger_button_style, divider_style, error_banner_style, icon_button_style,
@@ -28,6 +29,10 @@ use crate::{
 // ------------------------------------------------------------------
 
 pub fn main_view(app: &RingboardApp) -> Element<'_, Message> {
+    if app.state.ui.show_help {
+        return help_view(app);
+    }
+
     let is_settings = app.state.ui.active_tab == ActiveTab::Settings;
     let show_sections = app.show_sections();
     let detail_id = app.state.ui.details_requested;
@@ -68,6 +73,43 @@ pub fn main_view(app: &RingboardApp) -> Element<'_, Message> {
         .height(Length::Fill)
         .padding(app.state.theme.input_padding())
         .into()
+}
+
+/// The `?` shortcut list: the whole window, so every row fits without a
+/// scrollbar, rendered from [`shortcuts::SHORTCUTS`].
+fn help_view(app: &RingboardApp) -> Element<'_, Message> {
+    let rows = shortcuts::SHORTCUTS.iter().map(|shortcut| {
+        Element::from(
+            row![
+                text(shortcut.keys)
+                    .size(11)
+                    .font(app.state.theme.mono_font())
+                    .width(Length::Fixed(170.0)),
+                text(shortcut.description)
+                    .size(11)
+                    .font(app.state.theme.font()),
+            ]
+            .spacing(12),
+        )
+    });
+
+    container(
+        column![
+            text("Keyboard shortcuts")
+                .size(18)
+                .font(app.state.theme.font()),
+            column(rows).spacing(6),
+            text("? or Esc closes this list")
+                .size(11)
+                .font(app.state.theme.font()),
+        ]
+        .spacing(16),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .center_x(Length::Fill)
+    .center_y(Length::Fill)
+    .into()
 }
 
 // ------------------------------------------------------------------
@@ -898,6 +940,12 @@ fn status_bar(app: &RingboardApp) -> Element<'_, Message> {
     } else {
         format!("{} items", app.filtered_entries().len())
     };
+    let kind = match app.state.ui.search_kind {
+        SearchKind::Plain => "plain text",
+        SearchKind::Regex => "RegEx",
+        SearchKind::Mime => "MIME",
+    };
+    let status = format!("{counts}  \u{b7}  {kind}");
 
     let loading = if app.state.ui.pending_search_token.is_some() {
         "Searching..."
@@ -905,9 +953,9 @@ fn status_bar(app: &RingboardApp) -> Element<'_, Message> {
         ""
     };
 
-    let shortcuts = "Enter paste  \u{b7}  Esc clear/exit  \u{b7}  Ctrl+D detail  \u{b7}  Ctrl+R \
-                     refresh  \u{b7}  Ctrl+0-9 recent  \u{b7}  Ctrl+Shift+0-9 favorite  \u{b7}  \
-                     Alt+X search kind";
+    // Only the load-bearing chords fit next to the counts; `?` lists the rest.
+    let shortcuts = "Enter paste  \u{b7}  Esc clear/exit  \u{b7}  Ctrl+D detail  \u{b7}  Ctrl+0-9 \
+                     recent  \u{b7}  ? all shortcuts";
 
     if !app.state.ui.ctrl_held {
         return column![hairline()].spacing(6).width(Length::Fill).into();
@@ -917,7 +965,7 @@ fn status_bar(app: &RingboardApp) -> Element<'_, Message> {
         hairline(),
         container(
             row![
-                text(counts).size(11).font(app.state.theme.font()),
+                text(status).size(11).font(app.state.theme.font()),
                 text(loading).size(11).font(app.state.theme.font()),
                 Space::new().width(Length::Fill),
                 text(shortcuts).size(10).font(app.state.theme.mono_font()),
