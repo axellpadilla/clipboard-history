@@ -115,6 +115,11 @@ pub const WINDOW_MIN_SIZE: iced::Size = iced::Size::new(400.0, 480.0);
 pub const WINDOW_DEFAULT_SIZE: iced::Size = iced::Size::new(600.0, 650.0);
 pub const WINDOW_MAX_SIZE: iced::Size = iced::Size::new(800.0, 900.0);
 
+/// How far `PageUp`/`PageDown` move. Rows aren't uniform height (a collapsed
+/// preview vs. an expanded detail panel), so this is a fixed step rather than
+/// a measured viewport.
+const PAGE_STEP: usize = 10;
+
 /// Shared between the initial window `main` boots with and every window
 /// `wake` opens afresh — see `hide_window`/`wake` for why the window is
 /// fully closed and reopened instead of hidden/restored in place.
@@ -294,6 +299,10 @@ impl RingboardApp {
             }
             Message::MoveFavoriteUp(id) => self.move_favorite_up(id),
             Message::MoveFavoriteDown(id) => self.move_favorite_down(id),
+            Message::HelpToggled => {
+                self.state.ui.show_help = !self.state.ui.show_help;
+                Task::none()
+            }
 
             Message::Refresh => self.refresh(),
             Message::DismissError => {
@@ -881,20 +890,36 @@ impl RingboardApp {
                 self.state.ui.ctrl_held = modifiers.control();
                 Task::none()
             }
-            keyboard::Event::KeyPressed { key, modifiers, .. } => {
-                self.handle_key_pressed(&key, modifiers)
-            }
+            keyboard::Event::KeyPressed {
+                key,
+                modified_key,
+                modifiers,
+                ..
+            } => self.handle_key_pressed(&key, &modified_key, modifiers),
         }
     }
 
     fn handle_key_pressed(
         &mut self,
         key: &keyboard::Key,
+        modified_key: &keyboard::Key,
         modifiers: keyboard::Modifiers,
     ) -> Task<Message> {
         let current_id = self.current_highlight_id();
         let mut new_id = current_id;
         let mut set_pinned_expanded: Option<bool> = None;
+
+        // The shortcut list is modal: it only answers to its own toggle and Esc.
+        if self.state.ui.show_help {
+            return match modified_key.as_ref() {
+                key::Key::Character("?") => Task::done(Message::HelpToggled),
+                key::Key::Named(key::Named::Escape) => {
+                    self.state.ui.show_help = false;
+                    Task::none()
+                }
+                _ => Task::none(),
+            };
+        }
 
         match key {
             key::Key::Named(key::Named::Enter) => {
@@ -903,6 +928,15 @@ impl RingboardApp {
                 }
                 if let Some(id) = current_id {
                     return self.paste(id);
+                }
+                return Task::none();
+            }
+            key::Key::Named(key::Named::Delete) => {
+                if self.state.ui.input_active {
+                    return Task::none();
+                }
+                if let Some(id) = current_id {
+                    return self.delete(id);
                 }
                 return Task::none();
             }
@@ -948,14 +982,8 @@ impl RingboardApp {
                     self.state.ui.input_active = false;
                 }
                 let nav = self.nav_entries();
-                let show_sections = self.show_sections();
                 new_id = Self::next_id(&nav, current_id);
-                if show_sections && !self.state.ui.pinned_expanded && new_id.is_some() {
-                    let (pinned, _unpinned) = self.partitioned_entries();
-                    if new_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id)) {
-                        set_pinned_expanded = Some(true);
-                    }
-                }
+                set_pinned_expanded = self.expand_pinned_for(new_id);
                 // If wrapped from last entry back to first, focus the search bar instead
                 if !modifiers.control() && self.state.ui.query.is_empty() {
                     let nav = self.nav_entries();
@@ -971,14 +999,8 @@ impl RingboardApp {
             }
             key::Key::Named(key::Named::ArrowUp) if !modifiers.control() => {
                 let nav = self.nav_entries();
-                let show_sections = self.show_sections();
                 new_id = Self::prev_id(&nav, current_id);
-                if show_sections && !self.state.ui.pinned_expanded && new_id.is_some() {
-                    let (pinned, _unpinned) = self.partitioned_entries();
-                    if new_id.is_some_and(|id| pinned.iter().any(|e| e.entry.id() == id)) {
-                        set_pinned_expanded = Some(true);
-                    }
-                }
+                set_pinned_expanded = self.expand_pinned_for(new_id);
                 // If at the first entry, focus the search input instead
                 if !modifiers.control() && self.state.ui.query.is_empty() {
                     let nav = self.nav_entries();
@@ -987,6 +1009,27 @@ impl RingboardApp {
                         return operation::focus(crate::widgets::search_input_id());
                     }
                 }
+            }
+            key::Key::Named(key::Named::Home | key::Named::End) => {
+                let nav = self.nav_entries();
+                new_id = match key {
+                    key::Key::Named(key::Named::Home) => nav.first(),
+                    _ => nav.last(),
+                }
+                .map(|e| e.entry.id());
+                set_pinned_expanded = self.expand_pinned_for(new_id);
+            }
+            key::Key::Named(key::Named::PageUp | key::Named::PageDown) => {
+                let nav = self.nav_entries();
+                let last = nav.len().saturating_sub(1);
+                let index = current_id.and_then(|id| nav.iter().position(|e| e.entry.id() == id));
+                let target = if matches!(key, key::Key::Named(key::Named::PageUp)) {
+                    index.map_or(last, |index| index.saturating_sub(PAGE_STEP))
+                } else {
+                    index.map_or(0, |index| (index + PAGE_STEP).min(last))
+                };
+                new_id = nav.get(target).map(|e| e.entry.id());
+                set_pinned_expanded = self.expand_pinned_for(new_id);
             }
             key::Key::Named(key::Named::ArrowLeft) => {
                 let show_sections = self.show_sections();
@@ -1099,6 +1142,16 @@ impl RingboardApp {
                     return Task::none();
                 }
 
+                // `?` (Shift+`/` on most layouts) is only in the modified key:
+                // iced hands the handler the unmodified one.
+                if !modifiers.control()
+                    && !modifiers.alt()
+                    && modified_key.as_ref() == key::Key::Character("?")
+                    && !self.state.ui.input_active
+                {
+                    return Task::done(Message::HelpToggled);
+                }
+
                 // Typing a character when input is inactive: activate search and focus it
                 if !modifiers.control() && !modifiers.alt() && !self.state.ui.input_active {
                     self.state.ui.input_active = true;
@@ -1141,6 +1194,18 @@ impl RingboardApp {
     fn entry_has_extra_detail(&self, id: u64) -> bool {
         self.find_entry(id)
             .is_some_and(crate::widgets::entry_has_extra_detail)
+    }
+
+    /// Expands the pinned section when navigation lands inside it, so the
+    /// highlighted entry isn't scrolled to while it's still collapsed.
+    fn expand_pinned_for(&self, new_id: Option<u64>) -> Option<bool> {
+        if !self.show_sections() || self.state.ui.pinned_expanded {
+            return None;
+        }
+        let (pinned, _unpinned) = self.partitioned_entries();
+        new_id
+            .filter(|id| pinned.iter().any(|e| e.entry.id() == *id))
+            .map(|_| true)
     }
 
     /// Keeps the highlighted entry roughly in view after keyboard

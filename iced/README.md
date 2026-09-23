@@ -19,23 +19,33 @@ bash -c 'echo $(which ringboard-iced) toggle'
 
 ## Usage instructions
 
-- Type to search; the search box is focused automatically whenever the window is focused, so you
-  can start typing right away.
-  - Use <kbd>Alt</kbd> + <kbd>X</kbd> or <kbd>Alt</kbd> + <kbd>M</kbd> to cycle the search kind
-    (plain text → RegEx → MIME type).
-- Press <kbd>Enter</kbd> to paste the highlighted entry.
-  - Use <kbd>Ctrl</kbd> + <kbd>N</kbd> to paste the `N`<sup>th</sup> entry.
-- Use <kbd>Up</kbd>/<kbd>Down</kbd> to move the highlight, and <kbd>Left</kbd>/<kbd>Right</kbd> to
-  collapse/expand the Favorites section.
-- Hover an entry (or highlight it with the keyboard) to reveal its delete and show-details
-  buttons; the favorite star is always visible.
-- Use <kbd>Ctrl</kbd> + <kbd>D</kbd> to toggle details for the highlighted entry.
-- Use <kbd>Alt</kbd> + <kbd>1</kbd>-<kbd>5</kbd> to jump directly to a tab
-  (All/Text/Images/Favorites/Settings), or <kbd>Ctrl</kbd> + <kbd>Tab</kbd> /
-  <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Tab</kbd> to cycle through them.
-- Use <kbd>Ctrl</kbd> + <kbd>R</kbd> to manually reload the database.
-- Press <kbd>Escape</kbd> to clear the current search, or to close the app if the search is
-  already empty.
+- Type to search; the search box is focused automatically whenever the window is focused, so you can start typing right away.
+- Hover an entry (or highlight it with the keyboard) to reveal its delete and show-details buttons; the favorite star is always visible.
+
+## Keyboard shortcuts
+
+| Keys | Action |
+| --- | --- |
+| <kbd>Type</kbd> | search the clipboard history |
+| <kbd>Enter</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd> | paste the highlighted entry |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> | paste it as plain text |
+| <kbd>Ctrl</kbd>+<kbd>0</kbd>-<kbd>9</kbd> | paste the Nth recent entry |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>0</kbd>-<kbd>9</kbd> | paste the Nth favorite |
+| <kbd>Up</kbd> / <kbd>Down</kbd> | move the highlight |
+| <kbd>Home</kbd> / <kbd>End</kbd> | jump to the first or last entry |
+| <kbd>PgUp</kbd> / <kbd>PgDn</kbd> | move by a page |
+| <kbd>Left</kbd> / <kbd>Right</kbd> | collapse or expand Favorites, or open or close the details of the highlighted entry |
+| <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Up</kbd>/<kbd>Down</kbd> | move a favorite earlier or later |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | toggle details |
+| <kbd>Delete</kbd> | delete the highlighted entry |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | reload the database |
+| <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> | cycle tabs |
+| <kbd>Alt</kbd>+<kbd>1</kbd>-<kbd>5</kbd> | jump to a tab: All, Text, Images, Favorites, Settings |
+| <kbd>Alt</kbd>+<kbd>X</kbd> / <kbd>Alt</kbd>+<kbd>M</kbd> | cycle the search kind: plain, RegEx, MIME |
+| <kbd>?</kbd> | toggle this list |
+| <kbd>Esc</kbd> | clear the search, close details, then close the window |
+
+`src/shortcuts.rs` renders this list in the app, and tests that every row matches this section.
 
 ## Settings tab
 

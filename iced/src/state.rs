@@ -62,6 +62,9 @@ pub struct UiState {
     pub hovered_id: Option<u64>,
     pub input_active: bool,
     pub ctrl_held: bool,
+    /// Whether the `?` shortcut list is showing, which takes over the window
+    /// until it is dismissed.
+    pub show_help: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
