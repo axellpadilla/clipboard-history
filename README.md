@@ -34,6 +34,11 @@ A detailed technical breakdown of the project is available at https://alexsaveau
 ## Installation instructions
 
 > Note: Ringboard is Linux-only and requires a relatively recent Kernel (6+).
+>
+> Note: on GNOME Wayland the installation script also installs a
+> [GNOME Shell extension](gnome-extension), without which pasting would trigger a
+> "remote desktop" prompt on every paste. GNOME only loads extensions when the shell
+> starts, so log out and back in after installing.
 
 The easiest way to get going is to run the installation script for systemd, which downloads prebuilt
 binaries from this fork's [latest release](https://github.com/axellpadilla/clipboard-history/releases/latest):
@@ -122,6 +127,9 @@ Each submodule contains its own README with details on the submodule.
 - [`client-sdk/`](client-sdk): The client SDK offers APIs to read and write Ringboard data.
 - [`core/`](core): The core code shared across many Ringboard crates.
 - [`egui/`](egui): The egui Ringboard client displays clipboard entries in a standard GUI.
+- [`gnome-extension/`](gnome-extension): The GNOME Shell extension injects the paste keystroke on
+  GNOME Wayland, where XTEST would otherwise trigger a RemoteDesktop portal prompt and cannot reach
+  native Wayland applications.
 - [`iced/`](iced): The iced Ringboard client displays clipboard entries in a standard GUI.
 - [`server/`](server): The Ringboard server writes data to the Ringboard database.
 - [`tui/`](tui): The ratatui Ringboard client displays clipboard entries in your terminal.
