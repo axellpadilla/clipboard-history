@@ -1198,7 +1198,9 @@ fn handle_paste_event(
             let Some(name) = class.value.split(|&b| b == 0).nth(1) else {
                 return Ok(false);
             };
-            if name != b"ringboard-egui" {
+            // Any Ringboard GUI, not one client's exact name: a renamed or new
+            // client must not silently lose the deferral.
+            if !name.starts_with(b"ringboard") {
                 return Ok(false);
             }
 
