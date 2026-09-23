@@ -8,7 +8,7 @@ Verify against executable sources of truth, not prose. Always favor official thi
 
 - **Lint config**: The real `rustfmt` and `clippy` flags live in the `supercilex-tests` crate source, not in any repo config file. Read it when unsure about a lint rule.
 - **Golden files**: `client-sdk/api.golden`, `core/api.golden`, and `cli/command-reference*.golden` are the authoritative snapshot of the public API surface. They are the contract — if you change a public signature, the golden must be updated.
-- **CI is the test**: There is no `.github/`, no `rustfmt.toml`, no Makefile. `tests/tidy.rs` **is** the CI. If a rule isn't enforced there, it doesn't exist. Never create config files the test doesn't expect.
+- **CI is the test**: `.github/workflows/cid.yml` runs `cargo build --workspace --release` and `cargo test --workspace` on every push and PR; `cargo test --workspace` includes the lint test below, so it is the full gate, and `cargo test -p lint --test tidy` is the fast local equivalent. If a rule isn't enforced there, it doesn't exist — never create config files the tests don't expect.
 - **Third-party APIs**: When interacting with framework or library code (iced >0.14.0, `image` >0.25, `regex`, `rustix`, `tokio`, etc.), consult the upstream crate docs and source before assuming behavior. Iced >0.14's `text_input` lacking `on_focus` and `window::resize` corrupting text are examples of version-specific behavior that only the real docs/code reveal.
 
 ### Design by Contract (DbC)
@@ -96,7 +96,7 @@ The hidden `rustfmt` config applied: `style_edition=2024, imports_granularity=Cr
 
 The hidden `clippy` config: `-- -W clippy::all,pedantic,nursery,cargo,float_cmp_const,empty_structs_with_brackets` with a handful of commonly-suppressed lints (see `supercilex-tests` source for the exact suppression list).
 
-There is no `rustfmt.toml` and no `.github/` workflows — the lint test **is** the CI.
+There is no `rustfmt.toml` — this test **is** the lint config.
 
 ## Build & run
 
