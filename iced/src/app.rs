@@ -155,23 +155,31 @@ fn wake_messages(rx: Receiver<()>) -> impl Stream<Item = Message> {
     })
 }
 
-/// `keyboard::listen()` only delivers events the widget tree *ignored*. The
-/// always-focused search input captures Left/Right itself (to move its text
-/// cursor), so without this they'd never reach `handle_key_event` at all.
-/// Only forwards the ones that were actually captured, so nothing is ever
-/// delivered twice.
-fn captured_arrow_key(event: Event, status: Status, _window: window::Id) -> Option<Message> {
+/// `keyboard::listen()` only delivers events the widget tree *ignored*, and the
+/// focused search input claims several of them: Left/Right move its text
+/// cursor, and Ctrl+V/Ctrl+Shift+V (Shift isn't excluded) paste the clipboard
+/// into the field. Forward the ones the app still needs, so a focused search
+/// box cannot shadow a paste. Only forwards events that were actually captured,
+/// so nothing is ever delivered twice.
+fn captured_keys(event: Event, status: Status, _window: window::Id) -> Option<Message> {
     if status != Status::Captured {
         return None;
     }
-    match event {
-        Event::Keyboard(
-            event @ keyboard::Event::KeyPressed {
-                key: key::Key::Named(key::Named::ArrowLeft | key::Named::ArrowRight),
-                ..
-            },
-        ) => Some(Message::KeyEvent(event)),
-        _ => None,
+    let Event::Keyboard(inner) = event else {
+        return None;
+    };
+    let keyboard::Event::KeyPressed { key, modifiers, .. } = &inner else {
+        return None;
+    };
+    let wanted = match key {
+        key::Key::Named(key::Named::ArrowLeft | key::Named::ArrowRight) => true,
+        key::Key::Character(c) => modifiers.control() && c.eq_ignore_ascii_case("v"),
+        _ => false,
+    };
+    if wanted {
+        Some(Message::KeyEvent(inner))
+    } else {
+        None
     }
 }
 
@@ -339,7 +347,7 @@ impl RingboardApp {
         Subscription::batch([
             keyboard::listen().map(Message::KeyEvent),
             window::events().map(|(id, event)| Message::WindowEvent(id, event)),
-            iced::event::listen_with(captured_arrow_key),
+            iced::event::listen_with(captured_keys),
         ])
     }
 
@@ -890,9 +898,9 @@ impl RingboardApp {
 
         match key {
             key::Key::Named(key::Named::Enter) => {
-                if self.state.ui.input_active {
-                    return Task::none();
-                }
+                // Deliberately not gated on the search input: the active
+                // text_input has no `on_submit`, so a query being typed
+                // shouldn't stop Enter from pasting the highlighted entry.
                 if let Some(id) = current_id {
                     return self.paste(id);
                 }
@@ -1049,20 +1057,20 @@ impl RingboardApp {
             key::Key::Character(c) => {
                 let s = c.as_str();
 
-                // Ctrl+V paste focused entry (only when input is NOT active)
+                // The paste chords are never shadowed by a focused search box:
+                // `captured_keys` forwards the events the input handles itself.
+                // Ctrl+V pastes the highlighted entry...
                 if modifiers.control()
                     && !modifiers.shift()
                     && s.eq_ignore_ascii_case("v")
-                    && !self.state.ui.input_active
                     && let Some(id) = self.current_highlight_id()
                 {
                     return self.paste(id);
                 }
-                // Ctrl+Shift+V text-mode paste focused entry (only when input is NOT active)
+                // ...and Ctrl+Shift+V pastes it with the text/plain override.
                 if modifiers.control()
                     && modifiers.shift()
                     && s.eq_ignore_ascii_case("v")
-                    && !self.state.ui.input_active
                     && let Some(id) = self.current_highlight_id()
                 {
                     return self.paste_text(id);
