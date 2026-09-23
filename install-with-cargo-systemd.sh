@@ -128,8 +128,8 @@ esac
 if [ "$is_gnome" = 1 ] && [ -n "$WAYLAND_DISPLAY" ]; then
   echo "Installing the Ringboard GNOME Shell extension..."
   ext_dir=$(mktemp -d)
-  fetch "$RAW_BASE/gnome-extension/metadata.json" --output-dir "$ext_dir"
-  fetch "$RAW_BASE/gnome-extension/extension.js" --output-dir "$ext_dir"
+  fetch "$RAW_BASE/gnome-extension/metadata.json" -O --output-dir "$ext_dir"
+  fetch "$RAW_BASE/gnome-extension/extension.js" -O --output-dir "$ext_dir"
   (cd "$ext_dir" && zip -q ringboard-paste.zip metadata.json extension.js)
   gnome-extensions install --force "$ext_dir/ringboard-paste.zip"
   rm -rf "$ext_dir"
