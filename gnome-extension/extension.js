@@ -40,7 +40,13 @@ const MAX_PENDING_PASTES = 8;
 
 export default class RingboardPasteExtension extends Extension {
   enable() {
-    this._device = null;
+    // Created here rather than on the first paste: a device built and used in
+    // the same event loop turn resolves the keysyms against a keymap that isn't
+    // ready yet, which loses the modifiers and lands on the wrong key (observed
+    // as PageDown, `^[[6~`, reaching the target instead of a paste).
+    this._device = Clutter.get_default_backend()
+      .get_default_seat()
+      .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
     this._pasteTimeoutId = 0;
     this._pendingPastes = 0;
 
@@ -135,11 +141,6 @@ export default class RingboardPasteExtension extends Extension {
   }
 
   _notifyKey(keyval, state) {
-    if (!this._device) {
-      this._device = Clutter.get_default_backend()
-        .get_default_seat()
-        .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
-    }
     // notify_keyval wants microseconds; get_current_event_time() is milliseconds.
     this._device.notify_keyval(
       Clutter.get_current_event_time() * 1000,
