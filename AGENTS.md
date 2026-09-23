@@ -63,6 +63,15 @@ Reuse is mandatory where patterns repeat. Concrete examples in this codebase:
 - **`ImagePipeline` in `iced/src/app.rs`**: One type handles both thumbnail and full-resolution image decode/cache pipelines. The comment in the source says it explicitly: "keeping the mechanics in one type means fixes to requesting/eviction can't miss a twin copy."
 - **`UiEntryCache` enum** (`client-sdk/src/ui_actor.rs`): A single type represents all entry display states (text, highlighted text, image, binary, error) — no parallel type hierarchies per client.
 
+### Concise Text
+
+Written text — code comments, commit messages, issues, PR bodies, READMEs — is read far more often than it is written, so it stays as short as it can be while remaining complete: inline labels over sections, lists over paragraphs, a table over repeated prose.
+
+- **Comments only where the code cannot explain itself.** State *why*, not *what*: if a line needs a comment to say what it does, rewrite the line. No forensic detail — no source-file citations, no restating the implementation.
+- **No duplication across artifacts.** Each detail lives in one place (usually the issue or the README) and everything else links to it; never repeat the same rationale in an issue, a PR body, and a commit message.
+- **Do not hard-wrap prose.** One line per paragraph and per list item; renderers wrap it themselves, and hard-wrapped text reads like a letter in the raw view.
+- **Cut hedging and restatement.** "This is not caused by an API change — regenerating…" becomes "no API change: regenerating…"; delete sentences that repeat the previous one in different words.
+
 ### Repo-Specific Constraints
 
 - **Server is the single writer**: All mutations go through the server over Unix domain sockets (`io_uring` + `mmap` backed). Clients are read-only views. Never bypass the server to write to the DB directly.
