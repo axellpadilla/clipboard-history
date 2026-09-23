@@ -462,14 +462,43 @@ impl RingboardApp {
     // ------------------------------------------------------------------
 
     fn paste(&mut self, id: u64) -> Task<Message> {
-        self.state.ui.pending_search_token.take();
-        let _ = self.requests.send(Command::Paste(id));
-        Task::none()
+        self.paste_with(id, false)
     }
 
     fn paste_text(&mut self, id: u64) -> Task<Message> {
+        self.paste_with(id, true)
+    }
+
+    /// Pastes `id`, or holds the request until the modifier keys it was pressed
+    /// with are released: the injected chord picks up whatever is still held,
+    /// so `Ctrl+V` would arrive as `Ctrl+Shift+Insert` and `Ctrl+Shift+V`
+    /// would collide with its own V.
+    fn paste_with(&mut self, id: u64, as_text: bool) -> Task<Message> {
         self.state.ui.pending_search_token.take();
-        let _ = self.requests.send(Command::PasteText(id));
+        if !self.state.ui.modifiers.is_empty() {
+            self.state.ui.deferred_paste = Some(crate::state::DeferredPaste { id, as_text });
+            return Task::none();
+        }
+        self.send_paste(id, as_text)
+    }
+
+    fn flush_deferred_paste(&mut self) -> Task<Message> {
+        self.state
+            .ui
+            .deferred_paste
+            .take()
+            .map_or_else(Task::none, |pending| {
+                self.send_paste(pending.id, pending.as_text)
+            })
+    }
+
+    fn send_paste(&self, id: u64, as_text: bool) -> Task<Message> {
+        let command = if as_text {
+            Command::PasteText(id)
+        } else {
+            Command::Paste(id)
+        };
+        let _ = self.requests.send(command);
         Task::none()
     }
 
@@ -895,8 +924,12 @@ impl RingboardApp {
         match event {
             keyboard::Event::ModifiersChanged(modifiers)
             | keyboard::Event::KeyReleased { modifiers, .. } => {
-                self.state.ui.ctrl_held = modifiers.control();
-                Task::none()
+                self.state.ui.modifiers = modifiers;
+                if modifiers.is_empty() {
+                    self.flush_deferred_paste()
+                } else {
+                    Task::none()
+                }
             }
             keyboard::Event::KeyPressed {
                 key,
